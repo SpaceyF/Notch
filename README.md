@@ -2,6 +2,8 @@
 
 a mac-like notch / dynamic island but for windows. it sits at the top of your screen, shows whatever youre playing, reacts to your audio, and when you click it the whole thing expands into a full apple-music style player. i just wanted the dynamic island on my pc so i built it.
 
+![screenshot one](screenshot1.png)
+
 ## what it does
 
 - **now playing** from basically any app (spotify, cider, a youtube tab, whatever). it reads windows media stuff so theres no login or setup, it just works
