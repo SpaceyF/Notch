@@ -3,6 +3,7 @@
 a mac-like notch / dynamic island but for windows. it sits at the top of your screen, shows whatever youre playing, reacts to your audio, and when you click it the whole thing expands into a full apple-music style player. i just wanted the dynamic island on my pc so i built it.
 
 ![screenshot one](screenshot1.png)
+![screenshot two](screenshot2.png)
 
 ## what it does
 
