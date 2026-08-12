@@ -1,5 +1,8 @@
+using System.Data;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
+using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -31,7 +34,7 @@ using Path = System.IO.Path;
 
 namespace Notch;
 
-enum HoverTab { Media, Timer, Stats, Shelf, Clipboard, Apps }
+enum HoverTab { Media, Timer, Stats, Shelf, Clipboard, Apps, Calc, Translate, Net }
 
 public partial class Overlay : Window
 {
@@ -44,6 +47,8 @@ public partial class Overlay : Window
     readonly NowPlaying _np = new();
     AudioLevels? _audio;
     readonly List<Rectangle> _bars = new();
+    readonly List<Ellipse> _dots = new();          // 9x9 expanding-dot visualizer
+    readonly List<ScaleTransform> _dotScales = new();
     readonly DispatcherTimer _ui = new() { Interval = TimeSpan.FromMilliseconds(33) };
     readonly DispatcherTimer _top = new() { Interval = TimeSpan.FromMilliseconds(400) };
     readonly DispatcherTimer _hover = new() { Interval = TimeSpan.FromMilliseconds(40) };
@@ -87,12 +92,48 @@ public partial class Overlay : Window
     bool _dlActive;      // a download is in progress and owning the art slot
     bool _dlDoneFlash;   // showing the finished checkmark for a beat
 
+    // recording pill: red REC + running clock while something is capturing the screen
+    readonly DispatcherTimer _recClock = new() { Interval = TimeSpan.FromSeconds(1) };
+    bool _recActive;
+    bool _recForce;      // debug: force the pill on for a few seconds
+    DateTime _recStart;
+
+    // airdrop-style "file landed" card: a watcher fires when a finished file appears in a watched folder
+    readonly Incoming _incoming = new();
+    readonly DispatcherTimer _dropTimer = new();
+    string _dropPath = "";
+    bool _dropCardOpen;
+
     // apple-style media live activity (opens on a click while music plays)
     readonly DispatcherTimer _media = new() { Interval = TimeSpan.FromMilliseconds(250) };
     bool _mediaOpen;
     bool _seeking;
     readonly List<Rectangle> _mediaBars = new();
     DateTime _downTime;   // to tell a tap from a drag on the pill
+
+    // calculator tab
+    string _calcExpr = "";
+    TextBlock _calcDisplay = null!;
+    bool _calcResult;   // the display is showing a result, next digit starts fresh
+
+    // translator tab (translates the current clipboard text; no typing = no focus fights)
+    static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(8) };
+    string _transTarget = "en";
+    string _transSrc = "";
+
+    // network speed tab
+    readonly DispatcherTimer _net = new() { Interval = TimeSpan.FromSeconds(1) };
+    long _netRx, _netTx, _netAt;
+    readonly List<Rectangle> _netBars = new();
+    readonly Queue<double> _netHist = new();
+
+    // weather-reactive particles + confetti bursts (both off by default)
+    readonly Weather _weather = new();
+    readonly DispatcherTimer _wx = new() { Interval = TimeSpan.FromMilliseconds(33) };
+    readonly List<WxDrop> _wxDrops = new();
+    Sky _sky = Sky.Unknown;
+    readonly DispatcherTimer _confetti = new() { Interval = TimeSpan.FromMilliseconds(16) };
+    readonly List<Confetto> _confetti_ps = new();
 
     // file shelf + clipboard history (both in-memory) and pinned apps (saved)
     readonly List<string> _shelf = new();
@@ -122,8 +163,12 @@ public partial class Overlay : Window
         InitializeComponent();
         ApplyStyle();
         _ui.Tick += (s, e) => PaintBars();
-        _top.Tick += (s, e) => { UpdateFullscreen(); if (IsVisible) Reassert(); UpdateDots(); UpdateVr(); };
+        _top.Tick += (s, e) => { UpdateFullscreen(); if (IsVisible) Reassert(); UpdateDots(); UpdateVr(); UpdateRecording(); };
         _hover.Tick += (s, e) => HoverTick();
+
+        // clip the pill to its real rounded shape (not just its bounding box) so blurred art,
+        // weather particles, etc. don't poke out into the transparent corners
+        Shape.SizeChanged += (s, e) => ClipShape();
 
         // grab and stretch: press the notch and drag to pull it, like on an iphone
         Shape.MouseLeftButtonDown += GrabDown;
@@ -161,6 +206,15 @@ public partial class Overlay : Window
         TabShelf.Click += (s, e) => SwitchTab(HoverTab.Shelf);
         TabClip.Click += (s, e) => SwitchTab(HoverTab.Clipboard);
         TabApps.Click += (s, e) => SwitchTab(HoverTab.Apps);
+        TabCalc.Click += (s, e) => SwitchTab(HoverTab.Calc);
+        TabTrans.Click += (s, e) => SwitchTab(HoverTab.Translate);
+        TabNet.Click += (s, e) => SwitchTab(HoverTab.Net);
+        BuildCalc();
+        BuildTransLangs();
+        _net.Tick += (s, e) => UpdateNet();
+        _wx.Tick += (s, e) => WeatherTick();
+        _confetti.Tick += (s, e) => ConfettiTick();
+        _weather.Changed += () => Dispatcher.BeginInvoke(() => { _sky = _weather.Condition; ApplyWeather(); });
         ShelfPanel.DragOver += ShelfDragOver;
         ShelfPanel.Drop += ShelfDrop;
         RebuildShelf();
@@ -199,6 +253,14 @@ public partial class Overlay : Window
         _downloads.AllDone += () => Dispatcher.BeginInvoke(EndDownload);
         _dlEndTimer.Tick += (s, e) => ClearDownload();
 
+        _recClock.Tick += (s, e) => UpdateRecClock();
+
+        // airdrop card: the watcher runs off-thread, so bounce the event to the ui
+        _incoming.Landed += path => Dispatcher.BeginInvoke(() => ShowDrop(path));
+        _dropTimer.Tick += (s, e) => HideDropCard();
+        DropOpen.Click += (s, e) => { OpenPath(_dropPath); HideDropCard(); };
+        DropShow.Click += (s, e) => { RevealInFolder(_dropPath); HideDropCard(); };
+
         Loaded += async (s, e) =>
         {
             Position();
@@ -207,6 +269,8 @@ public partial class Overlay : Window
             _audio = new AudioLevels(BarCount);
             _audio.SetSensitivity(_settings.Sensitivity);
             if (_settings.ShowDownloadRing) _downloads.Start();
+            if (_settings.ShowAirdrop) _incoming.Start(AirdropFolders());
+            if (_settings.WeatherFx) _weather.Start();
             try { await _np.Start(); } catch { }
             try { await _notes.Start(); } catch { }
         };
@@ -235,18 +299,22 @@ public partial class Overlay : Window
         }
 
         // ios layout is a separate toggle: narrower pill, blank middle, small square of bars
+        bool dots = _settings.Visual == VisualStyle.Dots;
         if (ios)
         {
+            int n = Math.Clamp(_settings.Bars, 3, 10);
             _compact = BaseCompactIos * ws;
-            _expandedW = BaseExpandedIos * ws;
-            BuildBars(4, 5, 3, 2.5);
+            // grow the pill outward so the visualizer fits, instead of cramming it in
+            _expandedW = (BaseCompactIos + (dots ? 60 : n * 6.5 + 40)) * ws;
+            BuildBars(n, 4, 2.5, 2);   // bolder bars, honoring the count setting
         }
         else
         {
             _compact = (_settings.Style == NotchStyle.Island ? BaseCompactIsland : BaseCompactNotch) * ws;
             _expandedW = BaseExpanded * ws;
-            BuildBars(BarCount, 3, 2, 1.5);
+            BuildBars(Math.Clamp(_settings.Bars, 3, 10), 3, 2, 1.5);
         }
+        BuildDots(hs);
         _barMax = BaseBarMax * hs;
 
         Shape.Height = h;
@@ -271,6 +339,38 @@ public partial class Overlay : Window
 
         ApplyBarColor();
         RefreshContent();
+        ClipShape();   // corner radius may have changed even if the size didn't
+    }
+
+    // clip the pill to its rounded outline so nothing (blurred art, particles) bleeds into
+    // the transparent corners. tracks the live width and whatever corners are set right now.
+    void ClipShape()
+    {
+        double w = Shape.ActualWidth, h = Shape.ActualHeight;
+        if (w <= 0 || h <= 0) return;
+        Shape.Clip = RoundedGeo(w, h, Shape.CornerRadius);
+    }
+
+    static Geometry RoundedGeo(double w, double h, CornerRadius c)
+    {
+        double lim = Math.Min(w, h) / 2;
+        double tl = Math.Min(c.TopLeft, lim), tr = Math.Min(c.TopRight, lim);
+        double br = Math.Min(c.BottomRight, lim), bl = Math.Min(c.BottomLeft, lim);
+        var g = new StreamGeometry();
+        using (var ctx = g.Open())
+        {
+            ctx.BeginFigure(new Point(tl, 0), true, true);
+            ctx.LineTo(new Point(w - tr, 0), true, false);
+            if (tr > 0) ctx.ArcTo(new Point(w, tr), new System.Windows.Size(tr, tr), 0, false, SweepDirection.Clockwise, true, false);
+            ctx.LineTo(new Point(w, h - br), true, false);
+            if (br > 0) ctx.ArcTo(new Point(w - br, h), new System.Windows.Size(br, br), 0, false, SweepDirection.Clockwise, true, false);
+            ctx.LineTo(new Point(bl, h), true, false);
+            if (bl > 0) ctx.ArcTo(new Point(0, h - bl), new System.Windows.Size(bl, bl), 0, false, SweepDirection.Clockwise, true, false);
+            ctx.LineTo(new Point(0, tl), true, false);
+            if (tl > 0) ctx.ArcTo(new Point(tl, 0), new System.Windows.Size(tl, tl), 0, false, SweepDirection.Clockwise, true, false);
+        }
+        g.Freeze();
+        return g;
     }
 
     // the bars use the album art color while music plays (if that's turned on),
@@ -282,6 +382,7 @@ public partial class Overlay : Window
             accent = _artBrush;
         else { try { accent = Brush(_settings.Accent); } catch { accent = Brush("#3DD6C4"); } }
         foreach (var b in _bars) b.Fill = accent;
+        foreach (var d in _dots) d.Fill = accent;
     }
 
     static double Clamp(double v, double lo, double hi) => v < lo ? lo : v > hi ? hi : v;
@@ -303,6 +404,46 @@ public partial class Overlay : Window
             };
             _bars.Add(r);
             BarHost.Children.Add(r);
+        }
+    }
+
+    // build the 9x9 dot matrix. each dot has a scale transform so it can expand with the audio.
+    void BuildDots(double hs)
+    {
+        DotHost.Children.Clear();
+        _dots.Clear();
+        _dotScales.Clear();
+        double side = 30 * hs;
+        DotHost.Width = DotHost.Height = side;
+        double dot = Math.Max(2, side / 9 * 0.66);
+        for (int i = 0; i < 81; i++)
+        {
+            var sc = new ScaleTransform(0.4, 0.4);
+            var e = new Ellipse
+            {
+                Width = dot, Height = dot, Fill = Brush(_settings.Accent), Opacity = 0.3,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+                RenderTransformOrigin = new Point(0.5, 0.5), RenderTransform = sc,
+            };
+            _dots.Add(e); _dotScales.Add(sc); DotHost.Children.Add(e);
+        }
+    }
+
+    // each column is a frequency band; dots expand up from the bottom as that band gets louder
+    void PaintDots(float[] lv)
+    {
+        for (int c = 0; c < 9; c++)
+        {
+            int a = c * lv.Length / 9, b = Math.Max(a + 1, (c + 1) * lv.Length / 9);
+            double m = 0;
+            for (int k = a; k < b && k < lv.Length; k++) if (lv[k] > m) m = lv[k];
+            for (int row = 0; row < 9; row++)
+            {
+                int idx = row * 9 + c;
+                double inten = Math.Clamp(m * 9 - (8 - row), 0, 1);   // row 8 is the bottom
+                _dotScales[idx].ScaleX = _dotScales[idx].ScaleY = 0.4 + inten * 0.6;
+                _dots[idx].Opacity = 0.22 + inten * 0.78;
+            }
         }
     }
 
@@ -385,7 +526,7 @@ public partial class Overlay : Window
     // ---------------------------------------------------------------- now playing
     void UpdateTrack()
     {
-        if (_dlActive) return;   // the download activity owns the pill right now
+        if (_dlActive || _recActive) return;   // the download / recording activity owns the pill right now
         bool has = _np.Playing && !string.IsNullOrWhiteSpace(_np.Title);
         if (has)
         {
@@ -447,6 +588,9 @@ public partial class Overlay : Window
     // so it doesn't touch this. the blurred art sits behind when frosted art is on.
     void RefreshContent()
     {
+        RecBadge.Visibility = Visibility.Collapsed;   // on only in the recording branch below
+        DotHost.Visibility = Visibility.Collapsed;    // on only in the normal branch, in dot mode
+
         // a notification / copied / file pop takes over the whole pill while it's up.
         // the pop method picks the glyph vs the file preview, so we leave those alone here.
         if (_noteActive)
@@ -489,9 +633,23 @@ public partial class Overlay : Window
             return;
         }
 
+        // the screen is being captured: red dot on the left, "Recording" + a running clock
+        if (_recActive)
+        {
+            RecBadge.Visibility = Visibility.Visible;
+            ArtHost.Visibility = Visibility.Collapsed;
+            Info.Visibility = Visibility.Visible;
+            BarHost.Visibility = Visibility.Collapsed;
+            Frost.Visibility = Visibility.Collapsed;
+            FrostShade.Visibility = Visibility.Collapsed;
+            return;
+        }
+
         bool ios = _settings.IosLayout;
+        bool dots = _settings.Visual == VisualStyle.Dots;
         ArtHost.Visibility = _expanded ? Visibility.Visible : Visibility.Collapsed;
-        BarHost.Visibility = _expanded ? Visibility.Visible : Visibility.Collapsed;
+        BarHost.Visibility = (_expanded && !dots) ? Visibility.Visible : Visibility.Collapsed;
+        DotHost.Visibility = (_expanded && dots) ? Visibility.Visible : Visibility.Collapsed;
         Info.Visibility = (_expanded && !ios) ? Visibility.Visible : Visibility.Collapsed;
 
         bool frost = _settings.FrostedArt && _expanded && Art.Source != null;
@@ -547,8 +705,12 @@ public partial class Overlay : Window
     // the ring on the left (like just the album art popping out), or full width with text
     double DlActiveWidth => _settings.DownloadRingCompact ? _compact + 48 * _ws : _expandedW;
 
-    // what the pill's width should be right now, ignoring a note pop (which sizes itself)
-    double BaseWidth => _dlActive ? DlActiveWidth : (_expanded ? _expandedW : _compact);
+    // how wide the pill sits while recording: idle pill plus room for "Recording  0:12"
+    double RecWidth => _compact + 150 * _ws;
+
+    // what the pill's width should be right now, ignoring a note pop (which sizes itself).
+    // download owns the pill over recording, which owns it over the idle music/blank state
+    double BaseWidth => _dlActive ? DlActiveWidth : _recActive ? RecWidth : (_expanded ? _expandedW : _compact);
 
     // called every poll while a download runs: keep the ring up and refresh the size
     void ShowDownload(string name, long bytes)
@@ -587,6 +749,7 @@ public partial class Overlay : Window
         DlCheck.Visibility = Visibility.Visible;
         TitleText.Text = "Downloaded";
         ArtistText.Text = Shorten(name);
+        Burst();   // confetti on a finished download (if it's turned on)
     }
 
     // the last download left. if one just finished, linger the check; otherwise clear now
@@ -609,10 +772,10 @@ public partial class Overlay : Window
         _dlDoneFlash = false;
         DlSpin.BeginAnimation(RotateTransform.AngleProperty, null);
         RefreshContent();
-        UpdateTrack();   // decides _expanded from whether music is playing
+        UpdateTrack();   // decides _expanded from whether music is playing (no-ops while recording)
         // always snap the width back explicitly: music was already _expanded so UpdateTrack
         // wouldn't re-animate it, and the idle case needs to shrink off the download width
-        if (!_noteActive) Animate(_expanded ? _expandedW : _compact);
+        if (!_noteActive) Animate(_recActive ? RecWidth : _expanded ? _expandedW : _compact);
     }
 
     static string Shorten(string s) => s.Length > 30 ? s.Substring(0, 29) + "\u2026" : s;
@@ -640,6 +803,7 @@ public partial class Overlay : Window
     {
         if (_audio == null) return;
         var lv = _audio.Snapshot();
+        if (_settings.Visual == VisualStyle.Dots) PaintDots(lv);
         // when there are fewer bars than frequencies, each bar takes the loudest of its slice
         for (int i = 0; i < _bars.Count; i++)
         {
@@ -665,7 +829,8 @@ public partial class Overlay : Window
     {
         if ((++_dotTick % 3) != 0) return;   // only check about once a second
         if (!_settings.ShowDots) { if (Dots.Visibility != Visibility.Collapsed) Dots.Visibility = Visibility.Collapsed; return; }
-        bool mic = Privacy.MicInUse, cam = Privacy.CamInUse, screen = Privacy.ScreenInUse;
+        bool mic = Privacy.MicInUse, cam = Privacy.CamInUse;
+        bool screen = Privacy.ScreenInUse && !_recActive;   // the REC pill already shows this
         MicDot.Visibility = mic ? Visibility.Visible : Visibility.Collapsed;
         CamDot.Visibility = cam ? Visibility.Visible : Visibility.Collapsed;
         ScreenDot.Visibility = screen ? Visibility.Visible : Visibility.Collapsed;
@@ -682,6 +847,9 @@ public partial class Overlay : Window
         ShelfPanel.Visibility = t == HoverTab.Shelf ? Visibility.Visible : Visibility.Collapsed;
         ClipItems.Visibility = t == HoverTab.Clipboard ? Visibility.Visible : Visibility.Collapsed;
         AppItems.Visibility = t == HoverTab.Apps ? Visibility.Visible : Visibility.Collapsed;
+        CalcPanel.Visibility = t == HoverTab.Calc ? Visibility.Visible : Visibility.Collapsed;
+        TransPanel.Visibility = t == HoverTab.Translate ? Visibility.Visible : Visibility.Collapsed;
+        NetPanel.Visibility = t == HoverTab.Net ? Visibility.Visible : Visibility.Collapsed;
 
         var acc = CurrentAccent();
         TabMedia.Foreground = t == HoverTab.Media ? acc : Brushes.White;
@@ -690,14 +858,23 @@ public partial class Overlay : Window
         TabShelf.Foreground = t == HoverTab.Shelf ? acc : Brushes.White;
         TabClip.Foreground = t == HoverTab.Clipboard ? acc : Brushes.White;
         TabApps.Foreground = t == HoverTab.Apps ? acc : Brushes.White;
+        TabCalc.Foreground = t == HoverTab.Calc ? acc : Brushes.White;
+        TabTrans.Foreground = t == HoverTab.Translate ? acc : Brushes.White;
+        TabNet.Foreground = t == HoverTab.Net ? acc : Brushes.White;
 
         if (t == HoverTab.Clipboard) RebuildClips();
         if (t == HoverTab.Apps) RebuildApps();
         if (t == HoverTab.Shelf) RebuildShelf();
         if (t == HoverTab.Stats && _menuOpen) StartStats(); else StopStats();
+        if (t == HoverTab.Translate) StartTranslate();
+        if (t == HoverTab.Net && _menuOpen) StartNet(); else StopNet();
     }
 
     SolidColorBrush CurrentAccent() { try { return Brush(_settings.Accent); } catch { return Brush("#3DD6C4"); } }
+
+    // the accent to actually paint with: the album-art color when auto-accent is on and we
+    // have one, otherwise the chosen accent. the media card themes to the art with this.
+    SolidColorBrush EffectiveAccent() => (_settings.AutoAccent && _artBrush != null) ? _artBrush : CurrentAccent();
 
     // ---------------------------------------------------------------- timer tab
     void AdjustTimer(int deltaMinutes)
@@ -740,6 +917,7 @@ public partial class Overlay : Window
             UpdateTimerButton();
             try { System.Media.SystemSounds.Exclamation.Play(); } catch { }
             AttentionPulse();
+            Burst();   // confetti when a timer finishes (if it's turned on)
         }
         UpdateTimerText();
     }
@@ -819,6 +997,298 @@ public partial class Overlay : Window
     {
         var m = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
         return GlobalMemoryStatusEx(ref m) ? (int)m.dwMemoryLoad : 0;
+    }
+
+    // ---------------------------------------------------------------- calculator tab
+    static readonly string[] CalcKeys =
+    { "C", "⌫", "(", ")", "7", "8", "9", "/", "4", "5", "6", "×", "1", "2", "3", "-", "0", ".", "=", "+" };
+
+    void BuildCalc()
+    {
+        _calcDisplay = new TextBlock
+        {
+            Text = "0", Foreground = Brushes.White, FontFamily = new FontFamily("Segoe UI"), FontSize = 20,
+            TextAlignment = TextAlignment.Right, Margin = new Thickness(6, 2, 8, 6),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        CalcPanel.Children.Add(_calcDisplay);
+
+        var grid = new System.Windows.Controls.Primitives.UniformGrid { Columns = 4, Width = 4 * 46 };
+        foreach (var key in CalcKeys)
+        {
+            var b = new Button { Style = (Style)FindResource("Key"), Content = key };
+            if (key is "=" ) b.Foreground = CurrentAccent();
+            var k = key;
+            b.Click += (s, e) => CalcKey(k);
+            grid.Children.Add(b);
+        }
+        CalcPanel.Children.Add(grid);
+    }
+
+    void CalcKey(string k)
+    {
+        switch (k)
+        {
+            case "C": _calcExpr = ""; _calcResult = false; break;
+            case "⌫":   // backspace
+                if (_calcResult) { _calcExpr = ""; _calcResult = false; }
+                else if (_calcExpr.Length > 0) _calcExpr = _calcExpr[..^1];
+                break;
+            case "=": CalcEval(); return;
+            default:
+                if (_calcResult && (char.IsDigit(k[0]) || k == "(")) { _calcExpr = ""; _calcResult = false; }
+                else _calcResult = false;
+                _calcExpr += k == "×" ? "*" : k;
+                break;
+        }
+        UpdateCalcDisplay();
+    }
+
+    void CalcEval()
+    {
+        if (_calcExpr.Length == 0) return;
+        try
+        {
+            var val = new DataTable().Compute(_calcExpr, null);
+            _calcExpr = Convert.ToDouble(val).ToString("0.######");
+            _calcResult = true;
+        }
+        catch { _calcExpr = "Error"; _calcResult = true; }
+        UpdateCalcDisplay();
+    }
+
+    void UpdateCalcDisplay() =>
+        _calcDisplay.Text = _calcExpr.Length == 0 ? "0" : _calcExpr.Replace("*", "×");
+
+    // ---------------------------------------------------------------- translator tab
+    static readonly (string code, string label)[] TransLangList =
+    { ("en", "EN"), ("es", "ES"), ("fr", "FR"), ("de", "DE"), ("ja", "JA"), ("ko", "KO"), ("zh-CN", "ZH") };
+
+    void BuildTransLangs()
+    {
+        foreach (var (code, label) in TransLangList)
+        {
+            var b = new Button { Style = (Style)FindResource("Key"), Content = label, Width = 36, FontSize = 11 };
+            var c = code;
+            b.Click += (s, e) => { _transTarget = c; StartTranslate(); };
+            TransLangs.Children.Add(b);
+        }
+    }
+
+    // grab the current clipboard text (or last copy) and translate it
+    void StartTranslate()
+    {
+        foreach (var child in TransLangs.Children)
+            if (child is Button b)
+                b.Foreground = (string)b.Content == LabelFor(_transTarget) ? CurrentAccent() : Brushes.White;
+
+        string text = "";
+        try { if (System.Windows.Clipboard.ContainsText()) text = System.Windows.Clipboard.GetText(); } catch { }
+        if (string.IsNullOrWhiteSpace(text)) text = _clips.FirstOrDefault() ?? "";
+        text = text.Trim();
+        if (text.Length > 500) text = text[..500];
+        _transSrc = text;
+
+        if (text.Length == 0) { TransSrc.Text = "copy some text, then open this"; TransResult.Text = ""; return; }
+        TransSrc.Text = text;
+        TransResult.Text = "…";
+        _ = DoTranslate(text, _transTarget);
+    }
+
+    static string LabelFor(string code) => TransLangList.FirstOrDefault(l => l.code == code).label ?? "EN";
+
+    async Task DoTranslate(string text, string target)
+    {
+        string result;
+        try
+        {
+            var url = $"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={target}&dt=t&q={Uri.EscapeDataString(text)}";
+            using var doc = System.Text.Json.JsonDocument.Parse(await _http.GetStringAsync(url));
+            var sb = new System.Text.StringBuilder();
+            foreach (var chunk in doc.RootElement[0].EnumerateArray())
+                sb.Append(chunk[0].GetString());
+            result = sb.ToString();
+        }
+        catch { result = "couldn't translate (offline?)"; }
+        // ignore if the user moved on to another source/target while we were waiting
+        if (_transSrc == text && _transTarget == target) TransResult.Text = result;
+    }
+
+    // ---------------------------------------------------------------- network speed tab
+    void StartNet()
+    {
+        if (_netBars.Count == 0)
+            for (int i = 0; i < 20; i++)
+            {
+                var r = new Rectangle
+                {
+                    Width = 4, Height = 2, RadiusX = 2, RadiusY = 2, Margin = new Thickness(0, 0, 2, 0),
+                    VerticalAlignment = VerticalAlignment.Bottom, Fill = CurrentAccent(),
+                };
+                _netBars.Add(r); NetBars.Children.Add(r);
+            }
+        ReadNet(out _netRx, out _netTx);
+        _netAt = Environment.TickCount64;
+        _net.Start();
+    }
+
+    void StopNet() => _net.Stop();
+
+    void UpdateNet()
+    {
+        ReadNet(out long rx, out long tx);
+        long now = Environment.TickCount64;
+        double secs = Math.Max(0.001, (now - _netAt) / 1000.0);
+        double down = (rx - _netRx) / secs, up = (tx - _netTx) / secs;
+        _netRx = rx; _netTx = tx; _netAt = now;
+
+        NetText.Text = $"↓ {NetRate(down)}    ↑ {NetRate(up)}";
+
+        _netHist.Enqueue(down);
+        while (_netHist.Count > _netBars.Count) _netHist.Dequeue();
+        double max = Math.Max(1, _netHist.Max());
+        var vals = _netHist.ToArray();
+        for (int i = 0; i < _netBars.Count; i++)
+        {
+            int idx = i - (_netBars.Count - vals.Length);
+            double v = idx >= 0 ? vals[idx] / max : 0;
+            _netBars[i].Fill = CurrentAccent();
+            _netBars[i].Height = 2 + v * 20;
+        }
+    }
+
+    static void ReadNet(out long rx, out long tx)
+    {
+        rx = 0; tx = 0;
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                if (ni.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel) continue;
+                var s = ni.GetIPStatistics();
+                rx += s.BytesReceived; tx += s.BytesSent;
+            }
+        }
+        catch { }
+    }
+
+    static string NetRate(double bytesPerSec)
+    {
+        double b = Math.Max(0, bytesPerSec);
+        if (b < 1024) return $"{b:0} B/s";
+        double kb = b / 1024.0;
+        if (kb < 1024) return $"{kb:0} KB/s";
+        return $"{kb / 1024.0:0.0} MB/s";
+    }
+
+    // ---------------------------------------------------------------- weather-reactive particles
+    readonly Random _rng = new();
+
+    sealed class WxDrop { public FrameworkElement El = null!; public double X, Y, V, Drift, Phase; }
+
+    void ApplyWeather()
+    {
+        bool on = _settings.WeatherFx && _sky is Sky.Rain or Sky.Snow or Sky.Storm;
+        WeatherLayer.Children.Clear();
+        _wxDrops.Clear();
+        if (!on) { _wx.Stop(); return; }
+
+        bool snow = _sky == Sky.Snow;
+        double w = Math.Max(_compact, Shape.Width);
+        int n = Math.Clamp((int)(w / (snow ? 26 : 18)), 6, 26);
+        for (int i = 0; i < n; i++) _wxDrops.Add(NewDrop(snow, true));
+        _wx.Start();
+    }
+
+    WxDrop NewDrop(bool snow, bool anywhere)
+    {
+        double w = Math.Max(_compact, WeatherLayer.ActualWidth > 1 ? WeatherLayer.ActualWidth : Shape.Width);
+        double h = Math.Max(20, WeatherLayer.ActualHeight > 1 ? WeatherLayer.ActualHeight : Shape.Height);
+        FrameworkElement el = snow
+            ? new Ellipse { Width = 3, Height = 3, Fill = Brush("#CCFFFFFF") }
+            : new Rectangle { Width = 1.6, Height = _sky == Sky.Storm ? 10 : 7, Fill = Brush("#99CFE4FF") };
+        WeatherLayer.Children.Add(el);
+        var d = new WxDrop
+        {
+            El = el,
+            X = _rng.NextDouble() * w,
+            Y = anywhere ? _rng.NextDouble() * h : -6,
+            V = snow ? 0.5 + _rng.NextDouble() : (_sky == Sky.Storm ? 4.5 : 3) + _rng.NextDouble() * 2,
+            Drift = snow ? (_rng.NextDouble() - 0.5) * 0.6 : 0.4,
+            Phase = _rng.NextDouble() * 6.28,
+        };
+        Canvas.SetLeft(el, d.X); Canvas.SetTop(el, d.Y);
+        return d;
+    }
+
+    void WeatherTick()
+    {
+        double h = WeatherLayer.ActualHeight > 1 ? WeatherLayer.ActualHeight : Shape.Height;
+        double w = WeatherLayer.ActualWidth > 1 ? WeatherLayer.ActualWidth : Shape.Width;
+        bool snow = _sky == Sky.Snow;
+        foreach (var d in _wxDrops)
+        {
+            d.Y += d.V;
+            d.Phase += 0.08;
+            d.X += snow ? Math.Sin(d.Phase) * 0.6 : d.Drift;
+            if (d.Y > h + 6 || d.X < -6 || d.X > w + 6)
+            {
+                d.Y = -6; d.X = _rng.NextDouble() * w;
+            }
+            Canvas.SetLeft(d.El, d.X); Canvas.SetTop(d.El, d.Y);
+        }
+    }
+
+    // ---------------------------------------------------------------- confetti bursts
+    static readonly string[] ConfettiColors = { "#FF5E5B", "#FFD93D", "#6BCB77", "#4D96FF", "#B983FF", "#FF9F45" };
+
+    sealed class Confetto { public Rectangle El = null!; public RotateTransform Rot = null!; public double X, Y, Vx, Vy, Spin; }
+
+    void Burst()
+    {
+        if (!_settings.Confetti) return;
+        double cx = ActualWidth / 2, cy = 24;
+        for (int i = 0; i < 42; i++)
+        {
+            var rot = new RotateTransform(_rng.Next(360));
+            var r = new Rectangle
+            {
+                Width = 6, Height = 9, Fill = Brush(ConfettiColors[_rng.Next(ConfettiColors.Length)]),
+                RenderTransformOrigin = new Point(0.5, 0.5), RenderTransform = rot,
+            };
+            ConfettiLayer.Children.Add(r);
+            double ang = -Math.PI / 2 + (_rng.NextDouble() - 0.5) * 2.4;
+            double sp = 6 + _rng.NextDouble() * 8;
+            var c = new Confetto
+            {
+                El = r, Rot = rot, X = cx + (_rng.NextDouble() - 0.5) * 40, Y = cy,
+                Vx = Math.Cos(ang) * sp, Vy = Math.Sin(ang) * sp, Spin = (_rng.NextDouble() - 0.5) * 24,
+            };
+            Canvas.SetLeft(r, c.X); Canvas.SetTop(r, c.Y);
+            _confetti_ps.Add(c);
+        }
+        if (!_confetti.IsEnabled) _confetti.Start();
+    }
+
+    void ConfettiTick()
+    {
+        double floor = ActualHeight + 20;
+        for (int i = _confetti_ps.Count - 1; i >= 0; i--)
+        {
+            var c = _confetti_ps[i];
+            c.Vy += 0.35;          // gravity
+            c.Vx *= 0.99;
+            c.X += c.Vx; c.Y += c.Vy;
+            c.Rot.Angle += c.Spin;
+            Canvas.SetLeft(c.El, c.X); Canvas.SetTop(c.El, c.Y);
+            if (c.Y > floor)
+            {
+                ConfettiLayer.Children.Remove(c.El);
+                _confetti_ps.RemoveAt(i);
+            }
+        }
+        if (_confetti_ps.Count == 0) _confetti.Stop();
     }
 
     // ---------------------------------------------------------------- placement + topmost
@@ -1054,7 +1524,7 @@ public partial class Overlay : Window
     int _dbg;
     internal void DebugNextPopup()
     {
-        switch (_dbg++ % 9)
+        switch (_dbg++ % 11)
         {
             case 0: PopMessage("\uE7E7", "Discord", "new message from a friend", 4.0); break;   // notification
             case 1: PopMessage("\uE8C8", "Copied", "some text you just copied", 1.8); break;     // copied flash
@@ -1065,6 +1535,14 @@ public partial class Overlay : Window
             case 6: ShowDeviceCard(DeviceKind.Usb, "USB device", "Connected", CGray, 1.1); break;
             case 7: ShowDeviceCard(DeviceKind.Quest3, "Quest 3", "Connected", CGray, 0); break;
             case 8: DebugDownload(); break;
+            case 9: ShowDrop(@"C:\Windows\explorer.exe"); break;   // airdrop card preview
+            case 10:   // recording pill preview: force it on for a few seconds
+                _recForce = true;
+                var rt = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4.5) };
+                rt.Tick += (s, e) => { rt.Stop(); _recForce = false; };
+                rt.Start();
+                UpdateRecording();
+                break;
         }
     }
 
@@ -1115,6 +1593,115 @@ public partial class Overlay : Window
         DevScale.BeginAnimation(ScaleTransform.ScaleYProperty, a);
     }
 
+    // ---------------------------------------------------------------- recording pill
+    // checked a few times a second: is the screen being captured (recorded / shared)?
+    void UpdateRecording()
+    {
+        if (!_settings.ShowRecording) { if (_recActive) StopRec(); return; }
+        bool rec = _recForce || Privacy.ScreenInUse;
+        if (rec && !_recActive) StartRec();
+        else if (!rec && _recActive) StopRec();
+    }
+
+    void StartRec()
+    {
+        _recActive = true;
+        _recStart = DateTime.Now;
+        RecDot.Fill = Brush("#FF3B30");
+        TitleText.Text = "Recording";
+        ArtistText.Text = "0:00";
+        RefreshContent();
+        if (!_noteActive && !_dlActive) Animate(RecWidth);   // download, if running, keeps the width
+        // pulse the red dot so it reads as a live "you're being recorded" light
+        var pulse = new DoubleAnimation(1, 0.35, TimeSpan.FromMilliseconds(700))
+        { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever, EasingFunction = new SineEase() };
+        RecDot.BeginAnimation(OpacityProperty, pulse);
+        _recClock.Start();
+    }
+
+    void StopRec()
+    {
+        _recActive = false;
+        _recClock.Stop();
+        RecDot.BeginAnimation(OpacityProperty, null);
+        RecDot.Opacity = 1;
+        RefreshContent();
+        UpdateTrack();   // hand the pill back to music / idle
+        if (!_noteActive && !_dlActive) Animate(_expanded ? _expandedW : _compact);
+    }
+
+    void UpdateRecClock()
+    {
+        if (!_recActive) return;
+        ArtistText.Text = Fmt(DateTime.Now - _recStart);
+    }
+
+    // ---------------------------------------------------------------- airdrop file card
+    // the folders we watch: the user's list if they set one, otherwise the defaults
+    IEnumerable<string> AirdropFolders() =>
+        _settings.AirdropFolders.Count > 0 ? _settings.AirdropFolders : _incoming.DefaultFolders();
+
+    // a finished file landed in a watched folder: drop a card with it whooshing in
+    void ShowDrop(string path)
+    {
+        if (!_settings.ShowAirdrop) return;
+        _dropPath = path;
+        HideDeviceCard();   // don't stack two drop cards on top of each other
+
+        DropThumb.Source = PreviewImage(path) ?? FileIcon(path);
+        DropName.Text = Path.GetFileName(path);
+        DropSub.Text = FileMeta(path);
+        _dropCardOpen = true;
+
+        DropCard.Visibility = Visibility.Visible;
+        DropCardAnimate(1);
+        // the thumbnail flies in: pops from small to full with a springy landing
+        var pop = new DoubleAnimation(0.35, 1, TimeSpan.FromMilliseconds(520))
+        { EasingFunction = new ElasticEase { Oscillations = 1, Springiness = 5, EasingMode = EasingMode.EaseOut } };
+        DropThumbScale.BeginAnimation(ScaleTransform.ScaleXProperty, pop);
+        DropThumbScale.BeginAnimation(ScaleTransform.ScaleYProperty, pop);
+        try { System.Media.SystemSounds.Asterisk.Play(); } catch { }
+
+        _dropTimer.Stop();
+        _dropTimer.Interval = TimeSpan.FromSeconds(6);
+        _dropTimer.Start();
+    }
+
+    void HideDropCard()
+    {
+        _dropTimer.Stop();
+        _dropCardOpen = false;
+        DropCardAnimate(0);
+    }
+
+    void DropCardAnimate(double to)
+    {
+        var a = new DoubleAnimation(to, TimeSpan.FromMilliseconds(200))
+        { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
+        if (to == 0) a.Completed += (s, e) => { if (DropCardScale.ScaleY < 0.02) DropCard.Visibility = Visibility.Collapsed; };
+        DropCardScale.BeginAnimation(ScaleTransform.ScaleYProperty, a);
+    }
+
+    static string FileMeta(string path)
+    {
+        try { return FormatBytes(new FileInfo(path).Length); } catch { return ""; }
+    }
+
+    void OpenPath(string path)
+    {
+        try { if (File.Exists(path) || Directory.Exists(path)) Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); } catch { }
+    }
+
+    void RevealInFolder(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) Process.Start("explorer.exe", $"/select,\"{path}\"");
+            else if (Directory.Exists(path)) Process.Start("explorer.exe", $"\"{path}\"");
+        }
+        catch { }
+    }
+
     // ---------------------------------------------------------------- media live activity
     void BuildMediaBars()
     {
@@ -1147,6 +1734,7 @@ public partial class Overlay : Window
         // widen the pill to the card and square its bottom so the two merge into one notch
         double tr = _settings.Style == NotchStyle.Island ? 20 * _hs : 0;
         Shape.CornerRadius = new CornerRadius(tr, tr, 0, 0);
+        ClipShape();
         Animate(MediaCardWidth);
         MediaCard.Visibility = Visibility.Visible;
         MedAnimate(1);
@@ -1162,6 +1750,7 @@ public partial class Overlay : Window
         // restore the pill shape + width
         Shape.CornerRadius = _settings.Style == NotchStyle.Island
             ? new CornerRadius(20 * _hs) : new CornerRadius(0, 0, 22, 22);
+        ClipShape();
         RefreshContent();
         Animate(_expanded ? _expandedW : _compact);
     }
@@ -1196,8 +1785,9 @@ public partial class Overlay : Window
             MThumb.Margin = new Thickness(Math.Max(0, w * frac - MThumb.Width / 2), 0, 0, 0);
         }
 
-        var acc = CurrentAccent();
+        var acc = EffectiveAccent();
         MFill.Background = acc;
+        foreach (var bar in _mediaBars) bar.Fill = acc;   // theme the little equalizer to the art too
         MPlay.Content = _np.Playing ? "\uE769" : "\uE768";
         MShuffle.Foreground = _np.Shuffle ? acc : Brushes.White;
         MRepeat.Foreground = _np.Repeat > 0 ? acc : Brushes.White;
@@ -1303,6 +1893,8 @@ public partial class Overlay : Window
         DropPanel.Visibility = Visibility.Visible;
         DropAnimate(1);                         // grow the panel downward
         if (_tab == HoverTab.Stats) StartStats();
+        if (_tab == HoverTab.Net) StartNet();
+        if (_tab == HoverTab.Translate) StartTranslate();
     }
 
     void CloseMenu()
@@ -1310,6 +1902,7 @@ public partial class Overlay : Window
         _menuOpen = false;
         DropAnimate(0);                         // shrink it back up
         StopStats();
+        StopNet();
     }
 
     void DropAnimate(double to)
@@ -1333,6 +1926,7 @@ public partial class Overlay : Window
 
             if (_menuOpen && DropPanel.ActualHeight > 1 && InUnionWithPill(DropPanel, pa, pb, px, py)) return true;
             if (_mediaOpen && MediaCard.ActualHeight > 1 && InUnionWithPill(MediaCard, pa, pb, px, py)) return true;
+            if (_dropCardOpen && DropCard.ActualHeight > 1 && InUnionWithPill(DropCard, pa, pb, px, py)) return true;
         }
         catch { }
         return false;
@@ -1374,6 +1968,9 @@ public partial class Overlay : Window
     void GrabMove(object s, System.Windows.Input.MouseEventArgs e)
     {
         if (!_dragging) return;
+        // normally the top bar stays put while the music player is pulled down; the joke
+        // setting lets you grab and wiggle it loose from the card underneath
+        if (_mediaOpen && !_settings.WiggleWhenOpen) return;
         var p = e.GetPosition(this);
         double dx = p.X - _dragStart.X;
         double dy = p.Y - _dragStart.Y;
@@ -1587,7 +2184,9 @@ public partial class Overlay : Window
     internal void SetShowDots(bool v) { _settings.ShowDots = v; _settings.Save(); _dotTick = -1; UpdateDots(); }
     internal void SetFrostedArt(bool v) { _settings.FrostedArt = v; _settings.Save(); RefreshContent(); }
     internal void SetIosLayout(bool v) { _settings.IosLayout = v; _settings.Save(); ApplyStyle(); }
-    internal void SetSensitivity(double s) { _settings.Sensitivity = Clamp(s, 0.4, 2.5); _settings.Save(); _audio?.SetSensitivity(_settings.Sensitivity); }
+    internal void SetSensitivity(double s) { _settings.Sensitivity = Clamp(s, 0.25, 7.5); _settings.Save(); _audio?.SetSensitivity(_settings.Sensitivity); }
+    internal void SetBars(int n) { _settings.Bars = Math.Clamp(n, 3, 10); _settings.Save(); ApplyStyle(); }
+    internal void SetVisual(VisualStyle v) { _settings.Visual = v; _settings.Save(); ApplyStyle(); }
     internal void SetDragStrength(int v) { _settings.DragStrength = Math.Clamp(v, 1, 10); _settings.Save(); }
     internal void SetShowNotes(bool v) { _settings.ShowNotes = v; _settings.Save(); }
     internal void SetShowCopied(bool v) { _settings.ShowCopied = v; _settings.Save(); }
@@ -1606,8 +2205,37 @@ public partial class Overlay : Window
     internal void SetShowDeviceCard(bool v) { _settings.ShowDeviceCard = v; _settings.Save(); }
     internal void SetShowDeviceName(bool v) { _settings.ShowDeviceName = v; _settings.Save(); }
     internal void SetHideUnknownDevices(bool v) { _settings.HideUnknownDevices = v; _settings.Save(); }
+    internal void SetShowAirdrop(bool v)
+    {
+        _settings.ShowAirdrop = v; _settings.Save();
+        if (v) _incoming.Start(AirdropFolders());
+        else { _incoming.Stop(); if (_dropCardOpen) HideDropCard(); }
+    }
+    internal void AddAirdropFolder(string dir)
+    {
+        if (string.IsNullOrWhiteSpace(dir)) return;
+        // once the user picks their own folder, keep the defaults too so nothing silently stops working
+        if (_settings.AirdropFolders.Count == 0) _settings.AirdropFolders.AddRange(_incoming.DefaultFolders());
+        if (!_settings.AirdropFolders.Contains(dir)) _settings.AirdropFolders.Add(dir);
+        _settings.Save();
+        if (_settings.ShowAirdrop) _incoming.Start(AirdropFolders());
+    }
+    internal string DropFolderPath => _incoming.DropFolder;
+    internal void SetShowRecording(bool v)
+    {
+        _settings.ShowRecording = v; _settings.Save();
+        if (!v && _recActive) StopRec();
+    }
+    internal void SetWeatherFx(bool v)
+    {
+        _settings.WeatherFx = v; _settings.Save();
+        if (v) { _weather.Start(); _sky = _weather.Condition; ApplyWeather(); }
+        else { _weather.Stop(); _sky = Sky.Unknown; ApplyWeather(); }
+    }
+    internal void SetConfetti(bool v) { _settings.Confetti = v; _settings.Save(); if (v) Burst(); }   // little preview when you turn it on
+    internal void SetWiggleWhenOpen(bool v) { _settings.WiggleWhenOpen = v; _settings.Save(); }
 
-    internal void Shutdown() { _audio?.Dispose(); _top.Stop(); _ui.Stop(); _hover.Stop(); _timer.Stop(); _stats.Stop(); _noteTimer.Stop(); _notes.Stop(); _downloads.Stop(); _dlEndTimer.Stop(); _media.Stop(); _devTimer.Stop(); _devBurst.Stop(); if (_devNotify != IntPtr.Zero) UnregisterDeviceNotification(_devNotify); DisposeGpu(); }
+    internal void Shutdown() { _audio?.Dispose(); _top.Stop(); _ui.Stop(); _hover.Stop(); _timer.Stop(); _stats.Stop(); _noteTimer.Stop(); _notes.Stop(); _downloads.Stop(); _dlEndTimer.Stop(); _recClock.Stop(); _incoming.Stop(); _dropTimer.Stop(); _media.Stop(); _net.Stop(); _weather.Stop(); _wx.Stop(); _confetti.Stop(); _devTimer.Stop(); _devBurst.Stop(); if (_devNotify != IntPtr.Zero) UnregisterDeviceNotification(_devNotify); DisposeGpu(); }
 
     const int GWL_EXSTYLE = -20;
     const int WS_EX_TRANSPARENT = 0x20, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x08000000;

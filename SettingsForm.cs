@@ -9,7 +9,7 @@ namespace Notch;
 sealed class SettingsForm : WinForms.Form
 {
     readonly Overlay _overlay;
-    WinForms.Label _wVal = null!, _hVal = null!, _sVal = null!, _dVal = null!;
+    WinForms.Label _wVal = null!, _hVal = null!, _sVal = null!, _dVal = null!, _bVal = null!;
     WinForms.Button _island = null!, _notch = null!;
     readonly List<(WinForms.Button btn, string hex)> _swatches = new();
 
@@ -54,11 +54,12 @@ sealed class SettingsForm : WinForms.Form
         BuildAlerts();
         BuildDevices();
         BuildSystem();
+        BuildJokes();
 
         // the left nav rail
         var rail = new WinForms.Panel { Location = new Point(0, 0), Size = new Size(116, 452), BackColor = Rail };
         Controls.Add(rail);
-        string[] names = { "Look", "Media", "Alerts", "Devices", "System" };
+        string[] names = { "Look", "Media", "Alerts", "Devices", "System", "Jokes" };
         for (int i = 0; i < names.Length; i++)
         {
             var b = NavBtn(names[i], 8, 14 + i * 44);
@@ -111,7 +112,14 @@ sealed class SettingsForm : WinForms.Form
         Check(p, "Frosted album art", 50, _overlay.Settings.FrostedArt, v => _overlay.SetFrostedArt(v));
 
         Section(p, "Visualizer", 92);
-        Row(p, "React", 116, () => StepSens(-0.1), () => StepSens(+0.1), out _sVal);
+        Row(p, "React", 116, () => StepSens(-0.25), () => StepSens(+0.25), out _sVal);
+        Row(p, "Bars", 160, () => StepBars(-1), () => StepBars(+1), out _bVal);
+        Check(p, "Dot matrix (9x9) instead of bars", 200, _overlay.Settings.Visual == VisualStyle.Dots,
+            v => _overlay.SetVisual(v ? VisualStyle.Dots : VisualStyle.Bars));
+
+        Section(p, "Effects", 240);
+        Check(p, "Weather on the notch (rain / snow)", 264, _overlay.Settings.WeatherFx, v => _overlay.SetWeatherFx(v));
+        Check(p, "Confetti on big moments", 290, _overlay.Settings.Confetti, v => _overlay.SetConfetti(v));
     }
 
     void BuildAlerts()
@@ -123,11 +131,21 @@ sealed class SettingsForm : WinForms.Form
         Check(p, "Download ring while a download runs", 76, _overlay.Settings.ShowDownloadRing, v => _overlay.SetShowDownloadRing(v));
         Check(p, "Just the ring, no name or size", 100, _overlay.Settings.DownloadRingCompact, v => _overlay.SetDownloadRingCompact(v));
 
-        Section(p, "Indicators", 142);
-        Check(p, "Mic and camera dots", 166, _overlay.Settings.ShowDots, v => _overlay.SetShowDots(v));
+        Section(p, "Airdrop", 142);
+        Check(p, "Card when a file lands (screenshots, drops)", 166, _overlay.Settings.ShowAirdrop, v => _overlay.SetShowAirdrop(v));
+        var drop = Btn("Open drop folder", 0, 196, 148, 30);
+        drop.Click += (s, e) => { try { System.IO.Directory.CreateDirectory(_overlay.DropFolderPath); System.Diagnostics.Process.Start("explorer.exe", $"\"{_overlay.DropFolderPath}\""); } catch { } };
+        p.Controls.Add(drop);
+        var watch = Btn("Watch a folder…", 156, 196, 148, 30);
+        watch.Click += (s, e) => { using var d = new WinForms.FolderBrowserDialog(); if (d.ShowDialog() == WinForms.DialogResult.OK) _overlay.AddAirdropFolder(d.SelectedPath); };
+        p.Controls.Add(watch);
 
-        Section(p, "Behavior", 208);
-        Check(p, "Hide when an app is fullscreen", 232, _overlay.Settings.HideOnFullscreen, v => _overlay.SetHideOnFullscreen(v));
+        Section(p, "Indicators", 246);
+        Check(p, "Mic and camera dots", 270, _overlay.Settings.ShowDots, v => _overlay.SetShowDots(v));
+        Check(p, "Recording pill while the screen is captured", 296, _overlay.Settings.ShowRecording, v => _overlay.SetShowRecording(v));
+
+        Section(p, "Behavior", 338);
+        Check(p, "Hide when an app is fullscreen", 362, _overlay.Settings.HideOnFullscreen, v => _overlay.SetHideOnFullscreen(v));
     }
 
     void BuildDevices()
@@ -160,6 +178,20 @@ sealed class SettingsForm : WinForms.Form
         var dbg = Btn("Cycle popups", 0, 290, 304, 30);
         dbg.Click += (s, e) => _overlay.DebugNextPopup();
         p.Controls.Add(dbg);
+    }
+
+    void BuildJokes()
+    {
+        var p = Page();
+        Section(p, "Just for fun", 0);
+        Check(p, "Wiggle the top bar while the player's open", 24, _overlay.Settings.WiggleWhenOpen, v => _overlay.SetWiggleWhenOpen(v));
+        var note = new WinForms.Label
+        {
+            Text = "grab the black bar while the music player is\npulled down and it'll wobble loose from it.",
+            ForeColor = Sub, AutoSize = true, Location = new Point(2, 56), BackColor = Bg,
+            Font = new Font("Segoe UI", 8.5f),
+        };
+        p.Controls.Add(note);
     }
 
     // ---------------------------------------------------------------- nav
@@ -242,6 +274,8 @@ sealed class SettingsForm : WinForms.Form
 
     void StepSens(double delta) { _overlay.SetSensitivity(_overlay.Settings.Sensitivity + delta); Sync(); }
 
+    void StepBars(int delta) { _overlay.SetBars(_overlay.Settings.Bars + delta); Sync(); }
+
     void StepDrag(int delta) { _overlay.SetDragStrength(_overlay.Settings.DragStrength + delta); Sync(); }
 
     DevicesForm? _devices;
@@ -282,7 +316,8 @@ sealed class SettingsForm : WinForms.Form
         }
         _wVal.Text = $"{_overlay.Settings.WidthScale * 100:0}%";
         _hVal.Text = $"{_overlay.Settings.HeightScale * 100:0}%";
-        _sVal.Text = $"{_overlay.Settings.Sensitivity * 100:0}%";
+        _sVal.Text = $"{_overlay.Settings.Sensitivity / 2.5 * 100:0}%";   // 100% = the normal (punchy) 2.5x
+        _bVal.Text = $"{_overlay.Settings.Bars}";
         _dVal.Text = $"{_overlay.Settings.DragStrength}x";
     }
 

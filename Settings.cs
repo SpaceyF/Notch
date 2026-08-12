@@ -4,6 +4,7 @@ using System.Text.Json;
 namespace Notch;
 
 enum NotchStyle { Notch, Island }
+enum VisualStyle { Bars, Dots }
 
 // a user-set mapping from a plugged-in device (its usb vid:pid) to a model + name
 sealed class DeviceRule
@@ -25,13 +26,22 @@ sealed class NotchSettings
     public bool ShowDots { get; set; } = true;         // show the mic and camera in-use dots
     public bool FrostedArt { get; set; } = false;      // blur the album art behind the pill
     public bool IosLayout { get; set; } = false;       // blank middle, art left, small square visualizer right
-    public double Sensitivity { get; set; } = 1.0;     // how strongly the bars react (0.4 - 2.5)
+    public double Sensitivity { get; set; } = 2.5;     // how strongly the bars react. shown as a %, where 100% = 2.5x
+    public int Bars { get; set; } = 10;                // how many visualizer bars (3 - 10)
+    public VisualStyle Visual { get; set; } = VisualStyle.Bars;   // bar row or a 9x9 expanding dot matrix
+    public int Ver { get; set; } = 0;                  // settings schema version, for one-time migrations
     public int DragStrength { get; set; } = 1;         // how far the grab-stretch pulls, 1x (normal) to 10x
     public bool ShowNotes { get; set; } = true;        // pop windows notifications into the notch
     public bool ShowCopied { get; set; } = true;       // flash "copied" when you copy text
     public bool HideOnFullscreen { get; set; } = false; // hide while a fullscreen app is focused
     public bool ShowDownloadRing { get; set; } = true;  // spinning ring in the art spot while a download runs
     public bool DownloadRingCompact { get; set; } = true; // just the ring (like album art), no name/size text
+    public bool ShowAirdrop { get; set; } = true;       // airdrop-style card when a file lands in a watched folder
+    public List<string> AirdropFolders { get; set; } = new();  // folders to watch; empty = screenshots + the notch drop folder
+    public bool ShowRecording { get; set; } = true;     // red REC pill with a running clock while the screen is being captured
+    public bool WeatherFx { get; set; } = false;        // rain/snow particles on the notch matching real weather (off by default)
+    public bool Confetti { get; set; } = false;         // confetti burst on big moments like a finished download/timer (off by default)
+    public bool WiggleWhenOpen { get; set; } = false;   // joke: let you grab-wiggle the top bar while the music player is pulled down
     public List<string> PinnedApps { get; set; } = new();  // apps you can launch from the notch
     public bool ShowDeviceCard { get; set; } = true;   // pop a 3D card when you plug something in
     public bool ShowDeviceName { get; set; } = false;  // include the specific device name on that card
@@ -43,6 +53,9 @@ sealed class NotchSettings
 
     public static NotchSettings Load()
     {
+        // note: the react % is just a display rebase (100% shown = 2.5x internal), so there's
+        // no value migration. everyone keeps the exact bar strength they had; only the label
+        // and the fresh-install default (2.5 = "100%") changed.
         try
         {
             if (File.Exists(File_))

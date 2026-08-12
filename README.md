@@ -5,16 +5,21 @@ a mac-like notch / dynamic island but for windows. it sits at the top of your sc
 ## what it does
 
 - **now playing** from basically any app (spotify, cider, a youtube tab, whatever). it reads windows media stuff so theres no login or setup, it just works
-- **click it and the whole notch expands** into an apple music live activity. big album art, a scrubber you can drag to seek, and shuffle / prev / play / next / repeat
-- **live visualizer** that reacts to your actual system audio
+- **click it and the whole notch expands** into an apple music live activity. big album art, a scrubber you can drag to seek, and shuffle / prev / play / next / repeat. it themes to the album art too
+- **live visualizer** that reacts to your actual system audio. pick how many bars (up to 10), or switch it to a 9x9 grid of dots that expand with the sound
 - **adaptive accent** that pulls a color out of the album art (toggle in settings)
-- **right click** for a little tabbed menu: countdown timer, system stats (cpu / gpu / ram), a file shelf you can drop files onto, clipboard history, and pinned apps
+- **airdrop-style catch**, when a file lands in your `Notch Drop` folder or you take a screenshot, a card drops down with the thing whooshing in and open / show buttons
+- **recording pill**, a red REC dot with a running clock shows up while your screen is actually being captured (it ignores discord and other overlay apps so it doesnt lie to you)
 - **download ring**, it slides out where the album art goes and spins while a download is running, then flashes a check when its done
-- **privacy dots** for when your mic / cam / screen is in use
+- **right click** for a tabbed menu: countdown timer, system stats (cpu / gpu / ram), a file shelf, clipboard history, pinned apps, a calculator, a translator (translates whatever you last copied), and live network speed
+- **weather on the notch** (optional, off by default), real rain or snow on the pill matching your actual weather
+- **confetti** (optional, off by default) on big moments like a finished download or timer
+- **privacy dots** for when your mic / cam / screen is in use (and it wont get stuck on anymore)
 - **3d device cards** that pop with a spinning model when you plug something in (and you can hide the unknown ones)
 - **notification pops** and a little copied flash when you copy text
 - **grab it and stretch it** like on iphone, it springs back. theres a drag strength setting if you want it to go crazy (1x to 10x)
 - **sizing** so you can match your real notch. i run mine at 110% width 65% tall cause thats about the real mac notch
+- **a joke settings tab** cause why not
 
 ## install
 
@@ -26,6 +31,8 @@ it lives in your system tray. left click the tray icon for all the settings (sty
 
 - windows only obviously
 - some of the media stuff (seek, shuffle, repeat) depends on the app reporting it. spotify and cider are great, a random youtube tab might not support all of it, so those buttons just do nothing there
+- the translator and weather need internet, they use free no-key services so theyre best effort. if you're offline they just quietly do nothing
+- the recording pill uses the windows screen-capture signal, so obs display capture, snipping tool video and screen shares all trip it. nvidia shadowplay uses a different path so it wont, lemme know if you want that added
 - its an overlay that stays on top and clicks through everything except the notch itself, so it wont get in your way
 
 ## made by
