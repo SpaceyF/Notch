@@ -18,7 +18,7 @@ a mac-like notch / dynamic island but for windows. it sits at the top of your sc
 - **3d device cards** that pop with a spinning model when you plug something in (and you can hide the unknown ones)
 - **notification pops** and a little copied flash when you copy text
 - **grab it and stretch it** like on iphone, it springs back. theres a drag strength setting if you want it to go crazy (1x to 10x)
-- **sizing** so you can match your real notch. i run mine at 110% width 65% tall cause thats about the real mac notch
+- **sizing** so you can match your real notch. i run mine at 90% width 75% tall cause thats about the real mac notch
 - **a joke settings tab** cause why not
 
 ## install
