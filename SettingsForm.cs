@@ -9,7 +9,7 @@ namespace Notch;
 sealed class SettingsForm : WinForms.Form
 {
     readonly Overlay _overlay;
-    WinForms.Label _wVal = null!, _hVal = null!, _sVal = null!, _dVal = null!, _bVal = null!;
+    WinForms.Label _wVal = null!, _hVal = null!, _sVal = null!, _dVal = null!, _bVal = null!, _gVal = null!;
     WinForms.Button _island = null!, _notch = null!;
     readonly List<(WinForms.Button btn, string hex)> _swatches = new();
 
@@ -54,12 +54,13 @@ sealed class SettingsForm : WinForms.Form
         BuildAlerts();
         BuildDevices();
         BuildSystem();
+        BuildVoice();
         BuildJokes();
 
         // the left nav rail
         var rail = new WinForms.Panel { Location = new Point(0, 0), Size = new Size(116, 452), BackColor = Rail };
         Controls.Add(rail);
-        string[] names = { "Look", "Media", "Alerts", "Devices", "System", "Jokes" };
+        string[] names = { "Look", "Media", "Alerts", "Devices", "System", "Voice", "Jokes" };
         for (int i = 0; i < names.Length; i++)
         {
             var b = NavBtn(names[i], 8, 14 + i * 44);
@@ -180,6 +181,56 @@ sealed class SettingsForm : WinForms.Form
         p.Controls.Add(dbg);
     }
 
+    void BuildVoice()
+    {
+        var p = Page();
+        Section(p, "Hey Siri", 0);
+        WinForms.CheckBox border = null!;
+        var siri = new WinForms.CheckBox
+        {
+            Text = "Listen for “Hey Siri”", ForeColor = Fg, BackColor = Bg, AutoSize = true,
+            Location = new Point(2, 24), Checked = _overlay.Settings.HeySiri, FlatStyle = WinForms.FlatStyle.Flat,
+        };
+        siri.CheckedChanged += (s, e) => { _overlay.SetHeySiri(siri.Checked); border.Enabled = siri.Checked; };
+        p.Controls.Add(siri);
+
+        border = new WinForms.CheckBox
+        {
+            Text = "Glowing screen border while listening", ForeColor = Fg, BackColor = Bg, AutoSize = true,
+            Location = new Point(2, 50), Checked = _overlay.Settings.SiriBorder, FlatStyle = WinForms.FlatStyle.Flat,
+            Enabled = _overlay.Settings.HeySiri,
+        };
+        border.CheckedChanged += (s, e) => _overlay.SetSiriBorder(border.Checked);
+        p.Controls.Add(border);
+
+        Check(p, "Talk back out loud", 76, _overlay.Settings.SiriVoice, v => _overlay.SetSiriVoice(v));
+        Row(p, "Glow", 104, () => StepGlow(-0.25), () => StepGlow(+0.25), out _gVal);
+
+        Section(p, "Commands", 150);
+        var see = Btn("See all commands…", 0, 174, 304, 30);
+        see.Click += (s, e) => ShowCommands();
+        p.Controls.Add(see);
+        var examples = string.Join("\n", Voice.Commands.Take(6).Select(c => $"“hey siri, {c.Phrases[0]}”"))
+            + "\n“hey siri, search up ___”   “hey siri, type ___”";
+        p.Controls.Add(new WinForms.Label
+        {
+            Text = examples, ForeColor = Sub, AutoSize = true, Location = new Point(2, 214), BackColor = Bg,
+            Font = new Font("Segoe UI", 8.5f),
+        });
+    }
+
+    CommandsForm? _cmds;
+    void ShowCommands()
+    {
+        if (_cmds == null || _cmds.IsDisposed)
+        {
+            _cmds = new CommandsForm();
+            _cmds.FormClosed += (s, e) => _cmds = null;
+            _cmds.Show();
+        }
+        _cmds.Activate();
+    }
+
     void BuildJokes()
     {
         var p = Page();
@@ -192,6 +243,10 @@ sealed class SettingsForm : WinForms.Form
             Font = new Font("Segoe UI", 8.5f),
         };
         p.Controls.Add(note);
+
+        Section(p, "RGB mode", 100);
+        Check(p, "RGB Siri (rainbow orb)", 124, _overlay.Settings.RgbSiri, v => _overlay.SetRgbSiri(v));
+        Check(p, "RGB Siri borders (rainbow frame)", 150, _overlay.Settings.RgbSiriBorder, v => _overlay.SetRgbSiriBorder(v));
     }
 
     // ---------------------------------------------------------------- nav
@@ -276,6 +331,8 @@ sealed class SettingsForm : WinForms.Form
 
     void StepBars(int delta) { _overlay.SetBars(_overlay.Settings.Bars + delta); Sync(); }
 
+    void StepGlow(double delta) { _overlay.SetSiriBorderSize(_overlay.Settings.SiriBorderSize + delta); Sync(); }
+
     void StepDrag(int delta) { _overlay.SetDragStrength(_overlay.Settings.DragStrength + delta); Sync(); }
 
     DevicesForm? _devices;
@@ -318,6 +375,7 @@ sealed class SettingsForm : WinForms.Form
         _hVal.Text = $"{_overlay.Settings.HeightScale * 100:0}%";
         _sVal.Text = $"{_overlay.Settings.Sensitivity / 2.5 * 100:0}%";   // 100% = the normal (punchy) 2.5x
         _bVal.Text = $"{_overlay.Settings.Bars}";
+        _gVal.Text = $"{_overlay.Settings.SiriBorderSize * 100:0}%";
         _dVal.Text = $"{_overlay.Settings.DragStrength}x";
     }
 

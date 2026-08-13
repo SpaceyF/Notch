@@ -42,6 +42,12 @@ sealed class NotchSettings
     public bool WeatherFx { get; set; } = false;        // rain/snow particles on the notch matching real weather (off by default)
     public bool Confetti { get; set; } = false;         // confetti burst on big moments like a finished download/timer (off by default)
     public bool WiggleWhenOpen { get; set; } = false;   // joke: let you grab-wiggle the top bar while the music player is pulled down
+    public bool HeySiri { get; set; } = false;          // always-listening "hey siri" voice commands (off by default, uses the mic)
+    public bool SiriBorder { get; set; } = false;       // glowing screen-edge frame while siri listens (needs HeySiri on)
+    public double SiriBorderSize { get; set; } = 1.0;   // how thick / far the border glow reaches (0.5 - 2.5)
+    public bool SiriVoice { get; set; } = true;         // siri speaks its reply out loud
+    public bool RgbSiri { get; set; } = false;          // joke: rainbow orb instead of the siri colors
+    public bool RgbSiriBorder { get; set; } = false;    // joke: rainbow screen border instead of the siri colors
     public List<string> PinnedApps { get; set; } = new();  // apps you can launch from the notch
     public bool ShowDeviceCard { get; set; } = true;   // pop a 3D card when you plug something in
     public bool ShowDeviceName { get; set; } = false;  // include the specific device name on that card

@@ -1,6 +1,7 @@
 <Window x:Class="Notch.Overlay"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Notch"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         ShowInTaskbar="False" Topmost="True" ResizeMode="NoResize"
         WindowStartupLocation="Manual" Width="1000" Height="260">
@@ -268,6 +269,20 @@
           <TextBlock x:Name="DevTitle" Foreground="White" FontFamily="Segoe UI" FontSize="12.5" FontWeight="SemiBold"/>
           <TextBlock x:Name="DevSub" Foreground="#9AA0A6" FontFamily="Segoe UI" FontSize="10" Margin="0,1,0,0"/>
         </StackPanel>
+      </StackPanel>
+    </Border>
+
+    <!-- "hey siri" mini live activity: a small orb + status that drops out of the notch -->
+    <Border x:Name="SiriCard" HorizontalAlignment="Center" Margin="0,6,0,0"
+            Background="#000000" CornerRadius="16" Padding="12,9" Visibility="Collapsed"
+            RenderTransformOrigin="0.5,0">
+      <Border.RenderTransform>
+        <ScaleTransform x:Name="SiriScale" ScaleX="1" ScaleY="0"/>
+      </Border.RenderTransform>
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+        <local:SiriOrb x:Name="OrbCtl" Width="42" Height="42"/>
+        <TextBlock x:Name="SiriStatus" Foreground="#E6FFFFFF" FontFamily="Segoe UI" FontSize="13.5"
+                   FontWeight="SemiBold" VerticalAlignment="Center" Margin="12,0,4,0"/>
       </StackPanel>
     </Border>
 

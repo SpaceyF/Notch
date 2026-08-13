@@ -98,6 +98,14 @@ public partial class Overlay : Window
     bool _recForce;      // debug: force the pill on for a few seconds
     DateTime _recStart;
 
+    // "hey siri" voice commands. the orb drops out of the notch as a mini live activity;
+    // the glowing screen border is its own edge window
+    readonly Voice _voice = new();
+    readonly DispatcherTimer _siriHide = new();
+    readonly System.Speech.Synthesis.SpeechSynthesizer _tts = new();
+    bool _siriOpen;
+    SiriBorderWindow? _border;
+
     // airdrop-style "file landed" card: a watcher fires when a finished file appears in a watched folder
     readonly Incoming _incoming = new();
     readonly DispatcherTimer _dropTimer = new();
@@ -255,6 +263,14 @@ public partial class Overlay : Window
 
         _recClock.Tick += (s, e) => UpdateRecClock();
 
+        // "hey siri": the recognizer fires on a background thread, bounce it to the ui
+        _voice.Wakened += () => Dispatcher.BeginInvoke(OnWake);
+        _voice.Command += key => Dispatcher.BeginInvoke(() => RunVoiceCommand(key));
+        _voice.Dynamic += (kind, text) => Dispatcher.BeginInvoke(() => RunDynamic(kind, text));
+        _voice.Dismissed += () => Dispatcher.BeginInvoke(() => { HideSiriAfter(1.0); _border?.HideSoon(1.0); });
+        _voice.Level += lvl => Dispatcher.BeginInvoke(() => OrbCtl.SetLevel(lvl));
+        _siriHide.Tick += (s, e) => HideSiri();
+
         // airdrop card: the watcher runs off-thread, so bounce the event to the ui
         _incoming.Landed += path => Dispatcher.BeginInvoke(() => ShowDrop(path));
         _dropTimer.Tick += (s, e) => HideDropCard();
@@ -271,6 +287,7 @@ public partial class Overlay : Window
             if (_settings.ShowDownloadRing) _downloads.Start();
             if (_settings.ShowAirdrop) _incoming.Start(AirdropFolders());
             if (_settings.WeatherFx) _weather.Start();
+            if (_settings.HeySiri) _voice.Start();
             try { await _np.Start(); } catch { }
             try { await _notes.Start(); } catch { }
         };
@@ -998,6 +1015,197 @@ public partial class Overlay : Window
         var m = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
         return GlobalMemoryStatusEx(ref m) ? (int)m.dwMemoryLoad : 0;
     }
+
+    // ---------------------------------------------------------------- hey siri voice commands
+    SiriBorderWindow Border() => _border ??= new SiriBorderWindow();
+
+    // heard "hey siri ...": drop the orb card out of the notch (and light the border if on)
+    void OnWake()
+    {
+        ShowSiriListening();
+        if (_settings.SiriBorder && _settings.HeySiri)
+        {
+            Border().SetSize(_settings.SiriBorderSize);
+            Border().ShowBorder(_settings.RgbSiriBorder);
+            Border().Pulse();
+        }
+    }
+
+    // speak a short reply if that's turned on
+    void Say(string text)
+    {
+        if (!_settings.SiriVoice || string.IsNullOrWhiteSpace(text)) return;
+        try { _tts.SpeakAsyncCancelAll(); _tts.SpeakAsync(text); } catch { }
+    }
+
+    void ShowSiriListening()
+    {
+        _siriHide.Stop();
+        OrbCtl.Rgb = _settings.RgbSiri;
+        OrbCtl.Start();
+        SiriStatus.Text = "Listening…";
+        if (_siriOpen) return;
+        _siriOpen = true;
+        SiriCard.Visibility = Visibility.Visible;
+        SiriAnimate(1);
+    }
+
+    void ShowSiriResult(string text)
+    {
+        _siriHide.Stop();
+        SiriStatus.Text = text;
+        if (!_siriOpen) ShowSiriListening();
+        SiriStatus.Text = text;
+        HideSiriAfter(1.7);
+    }
+
+    void HideSiriAfter(double seconds)
+    {
+        if (!_siriOpen) return;
+        _siriHide.Stop();
+        _siriHide.Interval = TimeSpan.FromSeconds(seconds);
+        _siriHide.Start();
+    }
+
+    void HideSiri()
+    {
+        _siriHide.Stop();
+        _siriOpen = false;
+        OrbCtl.Stop();
+        SiriAnimate(0);
+    }
+
+    void SiriAnimate(double to)
+    {
+        var a = new DoubleAnimation(to, TimeSpan.FromMilliseconds(200))
+        { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
+        if (to == 0) a.Completed += (s, e) => { if (SiriScale.ScaleY < 0.02) SiriCard.Visibility = Visibility.Collapsed; };
+        SiriScale.BeginAnimation(ScaleTransform.ScaleYProperty, a);
+    }
+
+    void RunVoiceCommand(string key)
+    {
+        string label = Voice.Commands.FirstOrDefault(c => c.Key == key).Label ?? key;
+        try
+        {
+            switch (key)
+            {
+                case "next": _np.Next(); break;
+                case "prev": _np.Prev(); break;
+                case "playpause": _np.TogglePlayPause(); break;
+                case "shuffle": _np.ToggleShuffle(); break;
+                case "nowplaying":
+                    label = _np.Playing && !string.IsNullOrWhiteSpace(_np.Title)
+                        ? (string.IsNullOrWhiteSpace(_np.Artist) ? _np.Title : $"{_np.Title}   ·   {_np.Artist}")
+                        : "Nothing playing";
+                    break;
+                case "volup": Tap(VK_VOLUME_UP); Tap(VK_VOLUME_UP); break;
+                case "voldown": Tap(VK_VOLUME_DOWN); Tap(VK_VOLUME_DOWN); break;
+                case "mute": Tap(VK_VOLUME_MUTE); break;
+                case "screenshot": Combo(VK_LWIN, VK_SNAPSHOT); break;   // win+prtscn saves a file (and the airdrop card catches it)
+                case "minimize": Combo(VK_LWIN, (byte)'D'); break;
+                case "lock": LockWorkStation(); break;
+                case "time": label = DateTime.Now.ToString("h:mm tt"); break;
+                default:
+                    if (key.StartsWith("close:")) KillApp(key.Substring(6));
+                    else if (key.StartsWith("open:")) OpenApp(key.Substring(5));
+                    break;
+            }
+        }
+        catch { }
+        OrbCtl.Flash();
+        string spoken = key == "nowplaying"
+            ? (_np.Playing && !string.IsNullOrWhiteSpace(_np.Title)
+                ? (string.IsNullOrWhiteSpace(_np.Artist) ? _np.Title : $"This is {_np.Title} by {_np.Artist}")
+                : "Nothing's playing")
+            : SpokenFor(key, label);
+        Say(spoken);
+        ShowSiriResult(label);
+        _border?.HideSoon(1.7);
+    }
+
+    // what siri says out loud for a command
+    static string SpokenFor(string key, string label) => key switch
+    {
+        "next" => "Skipping",
+        "prev" => "Going back",
+        "playpause" => "Okay",
+        "shuffle" => "Shuffle",
+        "volup" => "Volume up",
+        "voldown" => "Volume down",
+        "mute" => "Muted",
+        "screenshot" => "Screenshot taken",
+        "minimize" => "Showing the desktop",
+        "lock" => "Locking up",
+        "time" => "It's " + label,
+        _ when key.StartsWith("close:") => "Closing " + key.Substring(6),
+        _ when key.StartsWith("open:") => "Opening " + key.Substring(5),
+        _ => label,
+    };
+
+    // the open-ended ones: "hey siri search up ..." / "hey siri type ..."
+    void RunDynamic(string kind, string text)
+    {
+        try
+        {
+            if (kind == "search")
+                Process.Start(new ProcessStartInfo("https://www.google.com/search?q=" + Uri.EscapeDataString(text)) { UseShellExecute = true });
+            else if (kind == "type")
+                TypeText(text);
+        }
+        catch { }
+        OrbCtl.Flash();
+        Say(kind == "search" ? "Searching for " + text : "Typing");
+        ShowSiriResult(kind == "search" ? "Searching: " + Shorten(text) : "Typed");
+        _border?.HideSoon(1.7);
+    }
+
+    // send the text to whatever window has focus. the notch never takes focus, so it stays there.
+    static void TypeText(string text)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (char c in text)
+            sb.Append("+^%~(){}[]".IndexOf(c) >= 0 ? "{" + c + "}" : c.ToString());
+        try { System.Windows.Forms.SendKeys.SendWait(sb.ToString()); } catch { }
+    }
+
+    static void KillApp(string name)
+    {
+        try { foreach (var p in Process.GetProcessesByName(name)) { try { p.Kill(); } catch { } finally { p.Dispose(); } } }
+        catch { }
+    }
+
+    // best-effort launch by a known uri or path, since app locations vary
+    static void OpenApp(string name)
+    {
+        string? target = name switch
+        {
+            "discord" => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Discord", "Update.exe"),
+            "spotify" => "spotify:",
+            "steam" => "steam://open/main",
+            _ => name,
+        };
+        try
+        {
+            if (name == "discord" && File.Exists(target!))
+                Process.Start(new ProcessStartInfo(target!, "--processStart Discord.exe") { UseShellExecute = true });
+            else
+                Process.Start(new ProcessStartInfo(target!) { UseShellExecute = true });
+        }
+        catch { }
+    }
+
+    static void Tap(byte vk) { keybd_event(vk, 0, 0, UIntPtr.Zero); keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero); }
+    static void Combo(byte mod, byte vk)
+    {
+        keybd_event(mod, 0, 0, UIntPtr.Zero); keybd_event(vk, 0, 0, UIntPtr.Zero);
+        keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero); keybd_event(mod, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+    }
+
+    const byte VK_VOLUME_MUTE = 0xAD, VK_VOLUME_DOWN = 0xAE, VK_VOLUME_UP = 0xAF, VK_SNAPSHOT = 0x2C, VK_LWIN = 0x5B;
+    const uint KEYEVENTF_KEYUP = 0x2;
+    [DllImport("user32")] static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+    [DllImport("user32")] static extern bool LockWorkStation();
 
     // ---------------------------------------------------------------- calculator tab
     static readonly string[] CalcKeys =
@@ -2234,8 +2442,19 @@ public partial class Overlay : Window
     }
     internal void SetConfetti(bool v) { _settings.Confetti = v; _settings.Save(); if (v) Burst(); }   // little preview when you turn it on
     internal void SetWiggleWhenOpen(bool v) { _settings.WiggleWhenOpen = v; _settings.Save(); }
+    internal void SetHeySiri(bool v)
+    {
+        _settings.HeySiri = v; _settings.Save();
+        if (v) _voice.Start();
+        else { _voice.Stop(); HideSiri(); _border?.HideSoon(0.2); }
+    }
+    internal void SetSiriBorder(bool v) { _settings.SiriBorder = v; _settings.Save(); if (!v) _border?.HideSoon(0.2); }
+    internal void SetSiriBorderSize(double v) { _settings.SiriBorderSize = Clamp(v, 0.5, 2.5); _settings.Save(); _border?.SetSize(_settings.SiriBorderSize); }
+    internal void SetSiriVoice(bool v) { _settings.SiriVoice = v; _settings.Save(); }
+    internal void SetRgbSiri(bool v) { _settings.RgbSiri = v; _settings.Save(); OrbCtl.Rgb = v; }
+    internal void SetRgbSiriBorder(bool v) { _settings.RgbSiriBorder = v; _settings.Save(); _border?.SetRgb(v); }
 
-    internal void Shutdown() { _audio?.Dispose(); _top.Stop(); _ui.Stop(); _hover.Stop(); _timer.Stop(); _stats.Stop(); _noteTimer.Stop(); _notes.Stop(); _downloads.Stop(); _dlEndTimer.Stop(); _recClock.Stop(); _incoming.Stop(); _dropTimer.Stop(); _media.Stop(); _net.Stop(); _weather.Stop(); _wx.Stop(); _confetti.Stop(); _devTimer.Stop(); _devBurst.Stop(); if (_devNotify != IntPtr.Zero) UnregisterDeviceNotification(_devNotify); DisposeGpu(); }
+    internal void Shutdown() { _audio?.Dispose(); _top.Stop(); _ui.Stop(); _hover.Stop(); _timer.Stop(); _stats.Stop(); _noteTimer.Stop(); _notes.Stop(); _downloads.Stop(); _dlEndTimer.Stop(); _recClock.Stop(); _incoming.Stop(); _dropTimer.Stop(); _media.Stop(); _net.Stop(); _weather.Stop(); _wx.Stop(); _confetti.Stop(); _voice.Stop(); _siriHide.Stop(); OrbCtl.Stop(); _border?.Close(); try { _tts.Dispose(); } catch { } _devTimer.Stop(); _devBurst.Stop(); if (_devNotify != IntPtr.Zero) UnregisterDeviceNotification(_devNotify); DisposeGpu(); }
 
     const int GWL_EXSTYLE = -20;
     const int WS_EX_TRANSPARENT = 0x20, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x08000000;

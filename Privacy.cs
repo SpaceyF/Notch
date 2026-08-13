@@ -37,6 +37,7 @@ static class Privacy
     // off. discord's voice-activity mode holds the mic stream open constantly, call or not.
     static readonly HashSet<string> DeviceIgnore = new(StringComparer.OrdinalIgnoreCase)
     {
+        "notch",   // our own "hey siri" listening shouldn't light your mic dot
         "discord", "discordptb", "discordcanary", "discorddevelopment",
         "nvidia broadcast", "voicemeeter", "voicemeeter8", "voicemeeter8x64",
     };

@@ -1,0 +1,18 @@
+<Window x:Class="Notch.SiriBorderWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ShowInTaskbar="False" ShowActivated="False" Topmost="True" ResizeMode="NoResize"
+        WindowStartupLocation="Manual">
+  <Grid x:Name="Root" Opacity="0">
+    <!-- soft wide glow hugging the screen edge, bleeding inward onto your content.
+         margin 0 puts the stroke right on the edge; the outer half runs off-screen -->
+    <Rectangle x:Name="FrameGlow" Margin="0" StrokeThickness="70" Opacity="0.5">
+      <Rectangle.Effect><BlurEffect Radius="55"/></Rectangle.Effect>
+    </Rectangle>
+    <!-- brighter neon core line right at the edge -->
+    <Rectangle x:Name="FrameCore" Margin="0" StrokeThickness="16" Opacity="0.95">
+      <Rectangle.Effect><BlurEffect Radius="12"/></Rectangle.Effect>
+    </Rectangle>
+  </Grid>
+</Window>
