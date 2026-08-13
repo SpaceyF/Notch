@@ -53,8 +53,10 @@ sealed class Voice
     public event Action<string>? Command;
     // fired for the open-ended ones: (kind, text) e.g. ("search", "how tall is everest")
     public event Action<string, string>? Dynamic;
-    // fired when it heard "hey siri" but the rest didn't match, or it gave up
+    // fired when it clearly wasn't a "hey siri" at all: hide quietly
     public event Action? Dismissed;
+    // fired when it heard "hey siri" but couldn't make out the rest: show "didn't catch that"
+    public event Action? Misheard;
     // mic loudness 0-100, so the orb can react to your voice
     public event Action<int>? Level;
 
@@ -121,14 +123,15 @@ sealed class Voice
     void OnRecognized(object? s, SpeechRecognizedEventArgs e)
     {
         var text = e.Result.Text ?? "";
+        // not a "hey siri" at all: hide quietly, don't nag
         if (!text.StartsWith(Wake, StringComparison.OrdinalIgnoreCase)) { Dismissed?.Invoke(); return; }
         var rest = text.Substring(Wake.Length).Trim();
 
-        // the open-ended "search .../type ..." grammar: dictation confidence runs lower, so
-        // don't hold it to the same bar as the fixed commands
+        // the open-ended "search .../type ..." grammar uses dictation, which mishears a lot.
+        // hold it to a real bar so it stops confidently typing similar-sounding gibberish.
         if (_dyn != null && ReferenceEquals(e.Result.Grammar, _dyn))
         {
-            if (e.Result.Confidence < 0.3f) { Dismissed?.Invoke(); return; }
+            if (e.Result.Confidence < 0.62f) { Misheard?.Invoke(); return; }
             foreach (var (prefix, kind) in DynVerbs)
                 if (rest.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                 {
@@ -136,12 +139,12 @@ sealed class Voice
                     if (payload.Length > 0) { Dynamic?.Invoke(kind, payload); return; }
                     break;
                 }
-            Dismissed?.Invoke();
+            Misheard?.Invoke();
             return;
         }
 
-        if (e.Result.Confidence < 0.55f) { Dismissed?.Invoke(); return; }
+        if (e.Result.Confidence < 0.5f) { Misheard?.Invoke(); return; }
         if (_phraseToKey.TryGetValue(rest, out var key)) Command?.Invoke(key);
-        else Dismissed?.Invoke();
+        else Misheard?.Invoke();
     }
 }

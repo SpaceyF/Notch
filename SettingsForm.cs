@@ -9,7 +9,7 @@ namespace Notch;
 sealed class SettingsForm : WinForms.Form
 {
     readonly Overlay _overlay;
-    WinForms.Label _wVal = null!, _hVal = null!, _sVal = null!, _dVal = null!, _bVal = null!, _gVal = null!;
+    WinForms.Label _wVal = null!, _hVal = null!, _sVal = null!, _dVal = null!, _bVal = null!, _gVal = null!, _rVal = null!;
     WinForms.Button _island = null!, _notch = null!;
     readonly List<(WinForms.Button btn, string hex)> _swatches = new();
 
@@ -203,20 +203,26 @@ sealed class SettingsForm : WinForms.Form
         border.CheckedChanged += (s, e) => _overlay.SetSiriBorder(border.Checked);
         p.Controls.Add(border);
 
-        Check(p, "Talk back out loud", 76, _overlay.Settings.SiriVoice, v => _overlay.SetSiriVoice(v));
-        Row(p, "Glow", 104, () => StepGlow(-0.25), () => StepGlow(+0.25), out _gVal);
+        Row(p, "Glow", 78, () => StepGlow(-0.25), () => StepGlow(+0.25), out _gVal);
 
-        Section(p, "Commands", 150);
-        var see = Btn("See all commands…", 0, 174, 304, 30);
+        Section(p, "Talk back", 128);
+        Check(p, "Talk back out loud", 152, _overlay.Settings.SiriVoice, v => _overlay.SetSiriVoice(v));
+        p.Controls.Add(new WinForms.Label { Text = "Voice", ForeColor = Sub, AutoSize = true, Location = new Point(2, 184), BackColor = Bg });
+        var combo = new WinForms.ComboBox
+        {
+            DropDownStyle = WinForms.ComboBoxStyle.DropDownList, Location = new Point(56, 180), Size = new Size(248, 24),
+            BackColor = Face, ForeColor = Fg, FlatStyle = WinForms.FlatStyle.Flat,
+        };
+        foreach (var name in _overlay.VoiceNames()) combo.Items.Add(name);
+        combo.SelectedItem = string.IsNullOrEmpty(_overlay.Settings.SiriVoiceName) ? _overlay.CurrentVoiceName() : _overlay.Settings.SiriVoiceName;
+        combo.SelectedIndexChanged += (s, e) => { if (combo.SelectedItem is string n) _overlay.SetSiriVoiceName(n); };   // attached after selecting, so no preview on open
+        p.Controls.Add(combo);
+        Row(p, "Speed", 214, () => StepRate(-1), () => StepRate(+1), out _rVal);
+
+        Section(p, "Commands", 266);
+        var see = Btn("See all commands…", 0, 290, 304, 30);
         see.Click += (s, e) => ShowCommands();
         p.Controls.Add(see);
-        var examples = string.Join("\n", Voice.Commands.Take(6).Select(c => $"“hey siri, {c.Phrases[0]}”"))
-            + "\n“hey siri, search up ___”   “hey siri, type ___”";
-        p.Controls.Add(new WinForms.Label
-        {
-            Text = examples, ForeColor = Sub, AutoSize = true, Location = new Point(2, 214), BackColor = Bg,
-            Font = new Font("Segoe UI", 8.5f),
-        });
     }
 
     CommandsForm? _cmds;
@@ -333,6 +339,8 @@ sealed class SettingsForm : WinForms.Form
 
     void StepGlow(double delta) { _overlay.SetSiriBorderSize(_overlay.Settings.SiriBorderSize + delta); Sync(); }
 
+    void StepRate(int delta) { _overlay.SetSiriRate(_overlay.Settings.SiriRate + delta); Sync(); }
+
     void StepDrag(int delta) { _overlay.SetDragStrength(_overlay.Settings.DragStrength + delta); Sync(); }
 
     DevicesForm? _devices;
@@ -376,6 +384,7 @@ sealed class SettingsForm : WinForms.Form
         _sVal.Text = $"{_overlay.Settings.Sensitivity / 2.5 * 100:0}%";   // 100% = the normal (punchy) 2.5x
         _bVal.Text = $"{_overlay.Settings.Bars}";
         _gVal.Text = $"{_overlay.Settings.SiriBorderSize * 100:0}%";
+        _rVal.Text = $"{_overlay.Settings.SiriRate:+0;-0;0}";
         _dVal.Text = $"{_overlay.Settings.DragStrength}x";
     }
 

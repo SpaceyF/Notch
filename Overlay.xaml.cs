@@ -268,7 +268,9 @@ public partial class Overlay : Window
         _voice.Command += key => Dispatcher.BeginInvoke(() => RunVoiceCommand(key));
         _voice.Dynamic += (kind, text) => Dispatcher.BeginInvoke(() => RunDynamic(kind, text));
         _voice.Dismissed += () => Dispatcher.BeginInvoke(() => { HideSiriAfter(1.0); _border?.HideSoon(1.0); });
+        _voice.Misheard += () => Dispatcher.BeginInvoke(() => { OrbCtl.Flash(); ShowSiriResult("didn't catch that"); _border?.HideSoon(1.4); });
         _voice.Level += lvl => Dispatcher.BeginInvoke(() => OrbCtl.SetLevel(lvl));
+        ApplyTts();
         _siriHide.Tick += (s, e) => HideSiri();
 
         // airdrop card: the watcher runs off-thread, so bounce the event to the ui
@@ -1037,6 +1039,22 @@ public partial class Overlay : Window
         if (!_settings.SiriVoice || string.IsNullOrWhiteSpace(text)) return;
         try { _tts.SpeakAsyncCancelAll(); _tts.SpeakAsync(text); } catch { }
     }
+
+    // apply the saved voice + speed to the synthesizer
+    void ApplyTts()
+    {
+        try { _tts.Rate = Math.Clamp(_settings.SiriRate, -10, 10); } catch { }
+        try { if (!string.IsNullOrWhiteSpace(_settings.SiriVoiceName)) _tts.SelectVoice(_settings.SiriVoiceName); } catch { }
+    }
+
+    // the installed voices the user can pick from
+    internal List<string> VoiceNames()
+    {
+        try { return _tts.GetInstalledVoices().Where(v => v.Enabled).Select(v => v.VoiceInfo.Name).ToList(); }
+        catch { return new List<string>(); }
+    }
+
+    internal string CurrentVoiceName() { try { return _tts.Voice.Name; } catch { return ""; } }
 
     void ShowSiriListening()
     {
@@ -2451,6 +2469,13 @@ public partial class Overlay : Window
     internal void SetSiriBorder(bool v) { _settings.SiriBorder = v; _settings.Save(); if (!v) _border?.HideSoon(0.2); }
     internal void SetSiriBorderSize(double v) { _settings.SiriBorderSize = Clamp(v, 0.5, 2.5); _settings.Save(); _border?.SetSize(_settings.SiriBorderSize); }
     internal void SetSiriVoice(bool v) { _settings.SiriVoice = v; _settings.Save(); }
+    internal void SetSiriVoiceName(string name)
+    {
+        _settings.SiriVoiceName = name ?? ""; _settings.Save();
+        ApplyTts();
+        Say("this is how i sound");   // quick preview of the picked voice
+    }
+    internal void SetSiriRate(int r) { _settings.SiriRate = Math.Clamp(r, -5, 5); _settings.Save(); ApplyTts(); }
     internal void SetRgbSiri(bool v) { _settings.RgbSiri = v; _settings.Save(); OrbCtl.Rgb = v; }
     internal void SetRgbSiriBorder(bool v) { _settings.RgbSiriBorder = v; _settings.Save(); _border?.SetRgb(v); }
 

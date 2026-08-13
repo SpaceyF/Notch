@@ -46,6 +46,8 @@ sealed class NotchSettings
     public bool SiriBorder { get; set; } = false;       // glowing screen-edge frame while siri listens (needs HeySiri on)
     public double SiriBorderSize { get; set; } = 1.0;   // how thick / far the border glow reaches (0.5 - 2.5)
     public bool SiriVoice { get; set; } = true;         // siri speaks its reply out loud
+    public string SiriVoiceName { get; set; } = "";     // which installed windows voice talks back ("" = system default)
+    public int SiriRate { get; set; } = 0;              // how fast it talks, -5 (slow) to 5 (fast)
     public bool RgbSiri { get; set; } = false;          // joke: rainbow orb instead of the siri colors
     public bool RgbSiriBorder { get; set; } = false;    // joke: rainbow screen border instead of the siri colors
     public List<string> PinnedApps { get; set; } = new();  // apps you can launch from the notch
