@@ -102,7 +102,8 @@ public partial class Overlay : Window
     // the glowing screen border is its own edge window
     readonly Voice _voice = new();
     readonly DispatcherTimer _siriHide = new();
-    readonly System.Speech.Synthesis.SpeechSynthesizer _tts = new();
+    readonly Tts _tts = new();
+    readonly Whisper _whisper = new();
     bool _siriOpen;
     SiriBorderWindow? _border;
 
@@ -171,7 +172,7 @@ public partial class Overlay : Window
         InitializeComponent();
         ApplyStyle();
         _ui.Tick += (s, e) => PaintBars();
-        _top.Tick += (s, e) => { UpdateFullscreen(); if (IsVisible) Reassert(); UpdateDots(); UpdateVr(); UpdateRecording(); };
+        _top.Tick += (s, e) => { UpdateFullscreen(); if (IsVisible) Reassert(); UpdateDots(); UpdateVr(); UpdateRecording(); _whisper.UnloadIfIdle(TimeSpan.FromMinutes(3)); };
         _hover.Tick += (s, e) => HoverTick();
 
         // clip the pill to its real rounded shape (not just its bounding box) so blurred art,
@@ -266,7 +267,7 @@ public partial class Overlay : Window
         // "hey siri": the recognizer fires on a background thread, bounce it to the ui
         _voice.Wakened += () => Dispatcher.BeginInvoke(OnWake);
         _voice.Command += key => Dispatcher.BeginInvoke(() => RunVoiceCommand(key));
-        _voice.Dynamic += (kind, text) => Dispatcher.BeginInvoke(() => RunDynamic(kind, text));
+        _voice.Dynamic += (kind, text, wav) => Dispatcher.BeginInvoke(() => RunDynamic(kind, text, wav));
         _voice.Dismissed += () => Dispatcher.BeginInvoke(() => { HideSiriAfter(1.0); _border?.HideSoon(1.0); });
         _voice.Misheard += () => Dispatcher.BeginInvoke(() => { OrbCtl.Flash(); ShowSiriResult("didn't catch that"); _border?.HideSoon(1.4); });
         _voice.Level += lvl => Dispatcher.BeginInvoke(() => OrbCtl.SetLevel(lvl));
@@ -290,6 +291,7 @@ public partial class Overlay : Window
             if (_settings.ShowAirdrop) _incoming.Start(AirdropFolders());
             if (_settings.WeatherFx) _weather.Start();
             if (_settings.HeySiri) _voice.Start();
+            if (_settings.HeySiri && _settings.UseWhisper) _ = _whisper.EnsureModel();   // grab the model quietly up front
             try { await _np.Start(); } catch { }
             try { await _notes.Start(); } catch { }
         };
@@ -319,19 +321,24 @@ public partial class Overlay : Window
 
         // ios layout is a separate toggle: narrower pill, blank middle, small square of bars
         bool dots = _settings.Visual == VisualStyle.Dots;
+        bool centered = _settings.Visual == VisualStyle.Centered;
+        int n = centered ? 6 : Math.Clamp(_settings.Bars, 3, 10);   // ios style is a fixed 6 bars
         if (ios)
         {
-            int n = Math.Clamp(_settings.Bars, 3, 10);
             _compact = BaseCompactIos * ws;
-            // grow the pill outward so the visualizer fits, instead of cramming it in
-            _expandedW = (BaseCompactIos + (dots ? 60 : n * 6.5 + 40)) * ws;
-            BuildBars(n, 4, 2.5, 2);   // bolder bars, honoring the count setting
+            // the center style is a small tight cluster of thin bars, so the pill stays a normal
+            // ios width with the art left and the little visualizer on the right
+            double extra = dots ? 60 : centered ? 45 : n * 6.5 + 40;
+            _expandedW = (BaseCompactIos + extra) * ws;
+            if (centered) BuildBars(6, 2.5, 2, 1.25, centered: true);   // thin tight cluster (~27px)
+            else BuildBars(n, 4, 2.5, 2);   // bolder bars, honoring the count setting
         }
         else
         {
             _compact = (_settings.Style == NotchStyle.Island ? BaseCompactIsland : BaseCompactNotch) * ws;
             _expandedW = BaseExpanded * ws;
-            BuildBars(Math.Clamp(_settings.Bars, 3, 10), 3, 2, 1.5);
+            if (centered) BuildBars(6, 2.5, 2, 1.25, centered: true);
+            else BuildBars(n, 3, 2, 1.5);
         }
         BuildDots(hs);
         _barMax = BaseBarMax * hs;
@@ -340,15 +347,20 @@ public partial class Overlay : Window
 
         // size the album art to the pill's height so it fills it and stays centered, however
         // short/tall the notch is (e.g. mac-notch dimensions ~110% wide, 65% tall)
-        double art = Math.Max(16, Math.Round(h * 0.82));
+        // fine size + fine tune (a little up/down nudge) for the album art
+        double art = Math.Max(12, Math.Round(h * 0.82 * Clamp(_settings.ArtScale, 0.6, 1.5)));
         double ar = art * 0.26;
+        double nudge = Clamp(_settings.ArtNudge, -12, 12);
+        double nudgeX = Clamp(_settings.ArtNudgeX, -12, 12);
         ArtHost.Width = ArtHost.Height = art;
         ArtHost.VerticalAlignment = VerticalAlignment.Center;
         ArtHost.CornerRadius = new CornerRadius(ar);
         ArtHost.Clip = new RectangleGeometry(new Rect(0, 0, art, art), ar, ar);   // actually round the image
+        ArtHost.RenderTransform = new TranslateTransform(nudgeX, nudge);
         NoteImageHost.Width = NoteImageHost.Height = art;
         NoteImageHost.VerticalAlignment = VerticalAlignment.Center;
         NoteImageHost.Clip = new RectangleGeometry(new Rect(0, 0, art, art), ar, ar);
+        NoteImageHost.RenderTransform = new TranslateTransform(nudgeX, nudge);
         DlRing.LayoutTransform = new ScaleTransform(art / 30.0, art / 30.0);   // keep the ring in scale too
         BarHost.Height = 24 * hs;
 
@@ -408,16 +420,19 @@ public partial class Overlay : Window
 
     // (re)build the visualizer bars. ios uses a few wide bars to make a small
     // square, the other styles use a longer row of thin ones.
-    void BuildBars(int count, double width, double gap, double radius)
+    void BuildBars(int count, double width, double gap, double radius, bool centered = false)
     {
         BarHost.Children.Clear();
         _bars.Clear();
+        // centered = ios look: the bar is anchored in the middle so growing its height expands
+        // it symmetrically up and down. classic = anchored at the bottom so it grows upward.
+        var va = centered ? VerticalAlignment.Center : VerticalAlignment.Bottom;
         for (int i = 0; i < count; i++)
         {
             var r = new Rectangle
             {
                 Width = width, Height = 2, RadiusX = radius, RadiusY = radius,
-                VerticalAlignment = VerticalAlignment.Bottom,
+                VerticalAlignment = va,
                 Margin = new Thickness(0, 0, gap, 0),
                 Fill = Brush(_settings.Accent),
             };
@@ -1037,24 +1052,20 @@ public partial class Overlay : Window
     void Say(string text)
     {
         if (!_settings.SiriVoice || string.IsNullOrWhiteSpace(text)) return;
-        try { _tts.SpeakAsyncCancelAll(); _tts.SpeakAsync(text); } catch { }
+        _tts.Speak(text);
     }
 
     // apply the saved voice + speed to the synthesizer
     void ApplyTts()
     {
-        try { _tts.Rate = Math.Clamp(_settings.SiriRate, -10, 10); } catch { }
-        try { if (!string.IsNullOrWhiteSpace(_settings.SiriVoiceName)) _tts.SelectVoice(_settings.SiriVoiceName); } catch { }
+        _tts.SetRate(_settings.SiriRate);
+        if (!string.IsNullOrWhiteSpace(_settings.SiriVoiceName)) _tts.SetVoice(_settings.SiriVoiceName);
     }
 
     // the installed voices the user can pick from
-    internal List<string> VoiceNames()
-    {
-        try { return _tts.GetInstalledVoices().Where(v => v.Enabled).Select(v => v.VoiceInfo.Name).ToList(); }
-        catch { return new List<string>(); }
-    }
+    internal List<string> VoiceNames() => _tts.Voices();
 
-    internal string CurrentVoiceName() { try { return _tts.Voice.Name; } catch { return ""; } }
+    internal string CurrentVoiceName() => _tts.CurrentVoice();
 
     void ShowSiriListening()
     {
@@ -1161,21 +1172,86 @@ public partial class Overlay : Window
         _ => label,
     };
 
-    // the open-ended ones: "hey siri search up ..." / "hey siri type ..."
-    void RunDynamic(string kind, string text)
+    // the open-ended ones: "hey siri search up ..." / "hey siri type ..." / "hey siri open ..."
+    async void RunDynamic(string kind, string sysText, byte[]? wav)
     {
+        string text = sysText;
+        // re-transcribe the messy free-text part with whisper if it's on and ready
+        if (_settings.UseWhisper && wav != null && _whisper.ModelReady)
+        {
+            _siriHide.Stop();
+            SiriStatus.Text = "…";
+            var full = await _whisper.Transcribe(wav);
+            var payload = ExtractPayload(full, kind);
+            if (!string.IsNullOrWhiteSpace(payload)) text = payload;
+        }
+
+        // smart questions just answer out loud, no launching or typing
+        if (kind is "math" or "convert" or "spell" or "define")
+        {
+            _siriHide.Stop();
+            SiriStatus.Text = "…";
+            var ans = await Answers.Ask(kind, text);
+            OrbCtl.Flash();
+            if (string.IsNullOrWhiteSpace(ans)) { Say("i'm not sure"); ShowSiriResult("not sure"); }
+            else { Say(ans); ShowSiriResult(ans.Length > 90 ? ans.Substring(0, 90) + "…" : ans); }
+            _border?.HideSoon(2.2);
+            return;
+        }
+
         try
         {
-            if (kind == "search")
-                Process.Start(new ProcessStartInfo("https://www.google.com/search?q=" + Uri.EscapeDataString(text)) { UseShellExecute = true });
-            else if (kind == "type")
-                TypeText(text);
+            switch (kind)
+            {
+                case "search": Process.Start(new ProcessStartInfo("https://www.google.com/search?q=" + Uri.EscapeDataString(text)) { UseShellExecute = true }); break;
+                case "type": TypeText(text); break;
+                case "open": OpenApp(text.Trim().ToLowerInvariant()); break;
+            }
         }
         catch { }
         OrbCtl.Flash();
-        Say(kind == "search" ? "Searching for " + text : "Typing");
-        ShowSiriResult(kind == "search" ? "Searching: " + Shorten(text) : "Typed");
+        Say(kind switch { "search" => "Searching for " + text, "type" => "Typing", "open" => "Opening " + text, _ => "" });
+        ShowSiriResult(kind switch { "search" => "Searching: " + Shorten(text), "type" => "Typed", "open" => "Opening " + Shorten(text), _ => text });
         _border?.HideSoon(1.7);
+    }
+
+    // pull the payload out of whisper's transcription of the whole "hey siri <verb> ..." clip
+    static readonly Dictionary<string, string[]> KindVerbs = new()
+    {
+        ["search"] = new[] { "search up", "look up", "search for", "search", "google" },
+        ["type"] = new[] { "type" },
+        ["open"] = new[] { "open", "launch", "start" },
+        ["math"] = new[] { "how much is", "calculate", "what is", "what's" },
+        ["convert"] = new[] { "how many", "convert" },
+        ["define"] = new[] { "what does", "define" },
+        ["spell"] = new[] { "spell" },
+    };
+
+    static string ExtractPayload(string whisper, string kind)
+    {
+        var t = CleanWhisper(whisper);
+        if (t.Length == 0) return "";
+        if (!KindVerbs.TryGetValue(kind, out var verbs)) return t;
+        foreach (var v in verbs)   // verbs are ordered longest-first per kind
+        {
+            int i = t.IndexOf(v, StringComparison.OrdinalIgnoreCase);
+            if (i >= 0)
+            {
+                var payload = CleanWhisper(t.Substring(i + v.Length));
+                if (payload.Length > 0) return payload;
+            }
+        }
+        return "";   // couldn't find the verb, let the caller keep System.Speech's guess
+    }
+
+    // whisper likes to add junk: [BLANK_AUDIO] tokens, trailing dashes / em dashes, stray marks
+    static string CleanWhisper(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "";
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"\[[^\]]*\]", " ");   // [BLANK_AUDIO] etc
+        s = s.Replace('—', ' ').Replace('–', ' ').Replace("--", " ");    // em / en / double dash
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"\s+", " ").Trim();
+        return s.Trim(' ', '-', '.', ',', ':', ';', '"');
     }
 
     // send the text to whatever window has focus. the notch never takes focus, so it stays there.
@@ -1193,24 +1269,76 @@ public partial class Overlay : Window
         catch { }
     }
 
-    // best-effort launch by a known uri or path, since app locations vary
+    static bool TryStart(string target, string args = "")
+    {
+        try { Process.Start(new ProcessStartInfo(target, args) { UseShellExecute = true }); return true; }
+        catch { return false; }
+    }
+
+    // best-effort launch by name. fast paths for a couple apps, then the reliable one: find a
+    // matching start-menu shortcut (which is how cider and most installed apps actually resolve).
     static void OpenApp(string name)
     {
-        string? target = name switch
+        name = name.Trim();
+        switch (name)
         {
-            "discord" => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Discord", "Update.exe"),
-            "spotify" => "spotify:",
-            "steam" => "steam://open/main",
-            _ => name,
-        };
-        try
-        {
-            if (name == "discord" && File.Exists(target!))
-                Process.Start(new ProcessStartInfo(target!, "--processStart Discord.exe") { UseShellExecute = true });
-            else
-                Process.Start(new ProcessStartInfo(target!) { UseShellExecute = true });
+            case "spotify": if (TryStart("spotify:")) return; break;
+            case "steam": if (TryStart("steam://open/main")) return; break;
+            case "discord":
+                var d = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Discord", "Update.exe");
+                if (File.Exists(d) && TryStart(d, "--processStart Discord.exe")) return;
+                break;
         }
-        catch { }
+        var lnk = FindShortcut(name);
+        if (lnk != null && TryStart(lnk)) return;
+        TryStart(name);   // last resort: the shell resolves notepad, chrome (App Paths), etc.
+    }
+
+    // find the start-menu shortcut whose name best matches what was said
+    static string? FindShortcut(string name)
+    {
+        string[] roots =
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.Programs),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),
+        };
+        string? partial = null;
+        string? fuzzy = null; int fuzzyD = int.MaxValue;
+        int tol = Math.Max(1, name.Length / 3);   // allow a small mishear ("sider" -> "cider")
+        foreach (var root in roots)
+        {
+            if (!Directory.Exists(root)) continue;
+            IEnumerable<string> files;
+            try { files = Directory.EnumerateFiles(root, "*.lnk", SearchOption.AllDirectories); }
+            catch { continue; }
+            foreach (var f in files)
+            {
+                var stem = Path.GetFileNameWithoutExtension(f).ToLowerInvariant();
+                if (stem == name) return f;                                      // exact match wins now
+                if (partial == null && (stem.StartsWith(name) || stem.Contains(name))) partial = f;
+                int d = Lev(stem, name);   // whisper mishears brand names, so allow a close match
+                if (d < fuzzyD && d <= tol) { fuzzyD = d; fuzzy = f; }
+            }
+        }
+        return partial ?? fuzzy;
+    }
+
+    // edit distance, to forgive a mis-transcribed app name
+    static int Lev(string a, string b)
+    {
+        int[] d = new int[b.Length + 1];
+        for (int j = 0; j <= b.Length; j++) d[j] = j;
+        for (int i = 1; i <= a.Length; i++)
+        {
+            int prev = d[0]; d[0] = i;
+            for (int j = 1; j <= b.Length; j++)
+            {
+                int cur = d[j];
+                d[j] = Math.Min(Math.Min(d[j] + 1, d[j - 1] + 1), prev + (a[i - 1] == b[j - 1] ? 0 : 1));
+                prev = cur;
+            }
+        }
+        return d[b.Length];
     }
 
     static void Tap(byte vk) { keybd_event(vk, 0, 0, UIntPtr.Zero); keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero); }
@@ -2409,6 +2537,9 @@ public partial class Overlay : Window
     internal void SetAutoAccent(bool v) { _settings.AutoAccent = v; _settings.Save(); ApplyBarColor(); }
     internal void SetShowDots(bool v) { _settings.ShowDots = v; _settings.Save(); _dotTick = -1; UpdateDots(); }
     internal void SetFrostedArt(bool v) { _settings.FrostedArt = v; _settings.Save(); RefreshContent(); }
+    internal void SetArtScale(double v) { _settings.ArtScale = Clamp(v, 0.6, 1.5); _settings.Save(); ApplyStyle(); }
+    internal void SetArtNudge(double v) { _settings.ArtNudge = Clamp(v, -12, 12); _settings.Save(); ApplyStyle(); }
+    internal void SetArtNudgeX(double v) { _settings.ArtNudgeX = Clamp(v, -12, 12); _settings.Save(); ApplyStyle(); }
     internal void SetIosLayout(bool v) { _settings.IosLayout = v; _settings.Save(); ApplyStyle(); }
     internal void SetSensitivity(double s) { _settings.Sensitivity = Clamp(s, 0.25, 7.5); _settings.Save(); _audio?.SetSensitivity(_settings.Sensitivity); }
     internal void SetBars(int n) { _settings.Bars = Math.Clamp(n, 3, 10); _settings.Save(); ApplyStyle(); }
@@ -2467,7 +2598,7 @@ public partial class Overlay : Window
         else { _voice.Stop(); HideSiri(); _border?.HideSoon(0.2); }
     }
     internal void SetSiriBorder(bool v) { _settings.SiriBorder = v; _settings.Save(); if (!v) _border?.HideSoon(0.2); }
-    internal void SetSiriBorderSize(double v) { _settings.SiriBorderSize = Clamp(v, 0.5, 2.5); _settings.Save(); _border?.SetSize(_settings.SiriBorderSize); }
+    internal void SetSiriBorderSize(double v) { _settings.SiriBorderSize = Clamp(v, 0.2, 2.5); _settings.Save(); _border?.SetSize(_settings.SiriBorderSize); }
     internal void SetSiriVoice(bool v) { _settings.SiriVoice = v; _settings.Save(); }
     internal void SetSiriVoiceName(string name)
     {
@@ -2476,10 +2607,11 @@ public partial class Overlay : Window
         Say("this is how i sound");   // quick preview of the picked voice
     }
     internal void SetSiriRate(int r) { _settings.SiriRate = Math.Clamp(r, -5, 5); _settings.Save(); ApplyTts(); }
+    internal void SetUseWhisper(bool v) { _settings.UseWhisper = v; _settings.Save(); if (v) _ = _whisper.EnsureModel(); }
     internal void SetRgbSiri(bool v) { _settings.RgbSiri = v; _settings.Save(); OrbCtl.Rgb = v; }
     internal void SetRgbSiriBorder(bool v) { _settings.RgbSiriBorder = v; _settings.Save(); _border?.SetRgb(v); }
 
-    internal void Shutdown() { _audio?.Dispose(); _top.Stop(); _ui.Stop(); _hover.Stop(); _timer.Stop(); _stats.Stop(); _noteTimer.Stop(); _notes.Stop(); _downloads.Stop(); _dlEndTimer.Stop(); _recClock.Stop(); _incoming.Stop(); _dropTimer.Stop(); _media.Stop(); _net.Stop(); _weather.Stop(); _wx.Stop(); _confetti.Stop(); _voice.Stop(); _siriHide.Stop(); OrbCtl.Stop(); _border?.Close(); try { _tts.Dispose(); } catch { } _devTimer.Stop(); _devBurst.Stop(); if (_devNotify != IntPtr.Zero) UnregisterDeviceNotification(_devNotify); DisposeGpu(); }
+    internal void Shutdown() { _audio?.Dispose(); _top.Stop(); _ui.Stop(); _hover.Stop(); _timer.Stop(); _stats.Stop(); _noteTimer.Stop(); _notes.Stop(); _downloads.Stop(); _dlEndTimer.Stop(); _recClock.Stop(); _incoming.Stop(); _dropTimer.Stop(); _media.Stop(); _net.Stop(); _weather.Stop(); _wx.Stop(); _confetti.Stop(); _voice.Stop(); _siriHide.Stop(); OrbCtl.Stop(); _border?.Close(); try { _tts.Dispose(); } catch { } try { _whisper.Dispose(); } catch { } _devTimer.Stop(); _devBurst.Stop(); if (_devNotify != IntPtr.Zero) UnregisterDeviceNotification(_devNotify); DisposeGpu(); }
 
     const int GWL_EXSTYLE = -20;
     const int WS_EX_TRANSPARENT = 0x20, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x08000000;

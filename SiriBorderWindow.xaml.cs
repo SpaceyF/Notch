@@ -53,7 +53,7 @@ public partial class SiriBorderWindow : Window
     // scale how thick and how far the glow reaches
     public void SetSize(double m)
     {
-        m = Math.Clamp(m, 0.4, 3.0);
+        m = Math.Clamp(m, 0.2, 3.0);
         FrameGlow.StrokeThickness = 70 * m;
         ((System.Windows.Media.Effects.BlurEffect)FrameGlow.Effect).Radius = 55 * m;
         FrameCore.StrokeThickness = 16 * m;

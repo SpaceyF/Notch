@@ -24,8 +24,8 @@ public partial class SiriOrb : UserControl
     double _t;
     double _react = 0.35, _reactTarget = 0.35;   // eased mic loudness so the ribbon swells when you talk
 
-    // mic loudness 0-100 while listening; the ribbon grows with your voice
-    public void SetLevel(int level) => _reactTarget = Math.Clamp(level / 65.0, 0, 1);
+    // mic loudness 0-100 while listening; the ribbon and orb grow with your voice
+    public void SetLevel(int level) => _reactTarget = Math.Clamp(level / 45.0, 0, 1);
 
     // a quick pop when a command lands
     public void Flash()
@@ -99,10 +99,10 @@ public partial class SiriOrb : UserControl
     {
         _t += 0.016;
         if (_rgb) RainbowPalette();
-        _react += (_reactTarget - _react) * 0.22;   // ease toward the current mic level
-        OrbReact.ScaleX = OrbReact.ScaleY = 1 + _react * 0.22;   // the whole orb grows while you talk
+        _react += (_reactTarget - _react) * 0.30;   // ease toward the current mic level
+        OrbReact.ScaleX = OrbReact.ScaleY = 1 + _react * 0.33;   // the whole orb grows while you talk
         double flow = _t * 2.1, twist = _t * 1.35;
-        double react = 0.45 + 0.85 * _react;         // calm when quiet, swells when you talk
+        double react = 0.38 + 1.15 * _react;         // calm when quiet, swells hard when you talk
         foreach (var r in _ribbons)
         {
             double amp = r.Amp * react * Math.Cos(twist + r.TwistOff);

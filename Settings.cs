@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace Notch;
 
 enum NotchStyle { Notch, Island }
-enum VisualStyle { Bars, Dots }
+enum VisualStyle { Bars, Dots, Centered }   // Centered = ios-style 6 bars that grow from the middle out
 
 // a user-set mapping from a plugged-in device (its usb vid:pid) to a model + name
 sealed class DeviceRule
@@ -25,10 +25,13 @@ sealed class NotchSettings
     public bool AutoAccent { get; set; } = true;       // color the bars to match the album art
     public bool ShowDots { get; set; } = true;         // show the mic and camera in-use dots
     public bool FrostedArt { get; set; } = false;      // blur the album art behind the pill
+    public double ArtScale { get; set; } = 1.0;        // fine size for the album art (0.6 - 1.5)
+    public double ArtNudge { get; set; } = 0.0;        // fine tune: nudge the album art up/down, in px (-12 - 12)
+    public double ArtNudgeX { get; set; } = 0.0;       // fine tune: nudge the album art left/right, in px (-12 - 12)
     public bool IosLayout { get; set; } = false;       // blank middle, art left, small square visualizer right
     public double Sensitivity { get; set; } = 2.5;     // how strongly the bars react. shown as a %, where 100% = 2.5x
     public int Bars { get; set; } = 10;                // how many visualizer bars (3 - 10)
-    public VisualStyle Visual { get; set; } = VisualStyle.Bars;   // bar row or a 9x9 expanding dot matrix
+    public VisualStyle Visual { get; set; } = VisualStyle.Centered;   // ios center-out bars, classic bar row, or a 9x9 dot matrix
     public int Ver { get; set; } = 0;                  // settings schema version, for one-time migrations
     public int DragStrength { get; set; } = 1;         // how far the grab-stretch pulls, 1x (normal) to 10x
     public bool ShowNotes { get; set; } = true;        // pop windows notifications into the notch
@@ -48,6 +51,7 @@ sealed class NotchSettings
     public bool SiriVoice { get; set; } = true;         // siri speaks its reply out loud
     public string SiriVoiceName { get; set; } = "";     // which installed windows voice talks back ("" = system default)
     public int SiriRate { get; set; } = 0;              // how fast it talks, -5 (slow) to 5 (fast)
+    public bool UseWhisper { get; set; } = true;        // re-transcribe free-text commands with whisper for accuracy (downloads a ~75mb model once)
     public bool RgbSiri { get; set; } = false;          // joke: rainbow orb instead of the siri colors
     public bool RgbSiriBorder { get; set; } = false;    // joke: rainbow screen border instead of the siri colors
     public List<string> PinnedApps { get; set; } = new();  // apps you can launch from the notch

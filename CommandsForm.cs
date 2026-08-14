@@ -42,6 +42,13 @@ sealed class CommandsForm : WinForms.Form
         // the open-ended ones (free speech after the verb)
         y = Row(scroll, "Search the web", new[] { "search up ___", "search ___", "google ___", "look up ___" }, y);
         y = Row(scroll, "Type text", new[] { "type ___" }, y);
+        y = Row(scroll, "Open an app", new[] { "open ___", "launch ___" }, y);
+
+        // smart questions, answered locally (no api, no cost)
+        y = Row(scroll, "Math", new[] { "what's 20% of 340", "calculate 45 times 12", "what's 100 divided by 4" }, y);
+        y = Row(scroll, "Convert units", new[] { "how many cups in 2 liters", "convert 10 miles to km" }, y);
+        y = Row(scroll, "Define a word", new[] { "define ___", "what does ___ mean" }, y);
+        y = Row(scroll, "Spell a word", new[] { "spell ___" }, y);
     }
 
     // one command: the name in white, its trigger phrases underneath in grey

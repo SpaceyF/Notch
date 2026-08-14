@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Speech.Recognition;
 
 namespace Notch;
@@ -45,14 +46,21 @@ sealed class Voice
     {
         ("search up ", "search"), ("look up ", "search"), ("search for ", "search"),
         ("search ", "search"), ("google ", "search"), ("type ", "type"),
+        ("open ", "open"), ("launch ", "open"), ("start ", "open"),
+        // smart questions, answered locally (math / convert / spell / define)
+        ("how much is ", "math"), ("calculate ", "math"), ("what is ", "math"), ("what's ", "math"),
+        ("how many ", "convert"), ("convert ", "convert"),
+        ("what does ", "define"), ("define ", "define"),
+        ("spell ", "spell"),
     };
 
     // fired (on a background thread) when a "hey siri ..." is starting to be heard
     public event Action? Wakened;
     // fired with a command key once a full phrase is recognized confidently
     public event Action<string>? Command;
-    // fired for the open-ended ones: (kind, text) e.g. ("search", "how tall is everest")
-    public event Action<string, string>? Dynamic;
+    // fired for the open-ended ones: (kind, System.Speech's guess, the recorded audio so a
+    // better engine can re-transcribe the messy free-text part). e.g. ("search", "...", wav)
+    public event Action<string, string, byte[]?>? Dynamic;
     // fired when it clearly wasn't a "hey siri" at all: hide quietly
     public event Action? Dismissed;
     // fired when it heard "hey siri" but couldn't make out the rest: show "didn't catch that"
@@ -113,6 +121,13 @@ sealed class Voice
         try { eng.Dispose(); } catch { }
     }
 
+    // the exact audio the recognizer heard, as a wav, so whisper can re-transcribe it
+    static byte[]? CaptureAudio(SpeechRecognizedEventArgs e)
+    {
+        try { using var ms = new MemoryStream(); e.Result.Audio.WriteToWaveStream(ms); return ms.ToArray(); }
+        catch { return null; }
+    }
+
     // light up the orb once it's actually heard "siri", not just "hey" on its own
     void OnHypothesized(object? s, SpeechHypothesizedEventArgs e)
     {
@@ -131,12 +146,14 @@ sealed class Voice
         // hold it to a real bar so it stops confidently typing similar-sounding gibberish.
         if (_dyn != null && ReferenceEquals(e.Result.Grammar, _dyn))
         {
-            if (e.Result.Confidence < 0.62f) { Misheard?.Invoke(); return; }
+            // lower bar than before: whisper re-checks the payload, so we just need to be sure
+            // it was a "hey siri <verb> ..." at all
+            if (e.Result.Confidence < 0.45f) { Misheard?.Invoke(); return; }
             foreach (var (prefix, kind) in DynVerbs)
                 if (rest.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                 {
                     var payload = rest.Substring(prefix.Length).Trim();
-                    if (payload.Length > 0) { Dynamic?.Invoke(kind, payload); return; }
+                    if (payload.Length > 0) { Dynamic?.Invoke(kind, payload, CaptureAudio(e)); return; }
                     break;
                 }
             Misheard?.Invoke();

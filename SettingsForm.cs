@@ -9,7 +9,7 @@ namespace Notch;
 sealed class SettingsForm : WinForms.Form
 {
     readonly Overlay _overlay;
-    WinForms.Label _wVal = null!, _hVal = null!, _sVal = null!, _dVal = null!, _bVal = null!, _gVal = null!, _rVal = null!;
+    WinForms.Label _wVal = null!, _hVal = null!, _sVal = null!, _dVal = null!, _bVal = null!, _gVal = null!, _rVal = null!, _aVal = null!, _tVal = null!, _txVal = null!;
     WinForms.Button _island = null!, _notch = null!;
     readonly List<(WinForms.Button btn, string hex)> _swatches = new();
 
@@ -111,16 +111,27 @@ sealed class SettingsForm : WinForms.Form
         Section(p, "Album art", 0);
         Check(p, "Match accent to what's playing", 24, _overlay.Settings.AutoAccent, v => _overlay.SetAutoAccent(v));
         Check(p, "Frosted album art", 50, _overlay.Settings.FrostedArt, v => _overlay.SetFrostedArt(v));
+        Row(p, "Size", 76, () => StepArtSize(-0.05), () => StepArtSize(+0.05), out _aVal);
+        Row(p, "Tune ↕", 116, () => StepArtNudge(-1), () => StepArtNudge(+1), out _tVal);
+        Row(p, "Tune ↔", 156, () => StepArtNudgeX(-1), () => StepArtNudgeX(+1), out _txVal);
 
-        Section(p, "Visualizer", 92);
-        Row(p, "React", 116, () => StepSens(-0.25), () => StepSens(+0.25), out _sVal);
-        Row(p, "Bars", 160, () => StepBars(-1), () => StepBars(+1), out _bVal);
-        Check(p, "Dot matrix (9x9) instead of bars", 200, _overlay.Settings.Visual == VisualStyle.Dots,
-            v => _overlay.SetVisual(v ? VisualStyle.Dots : VisualStyle.Bars));
+        Section(p, "Visualizer", 196);
+        Row(p, "React", 220, () => StepSens(-0.25), () => StepSens(+0.25), out _sVal);
+        Row(p, "Bars", 260, () => StepBars(-1), () => StepBars(+1), out _bVal);
+        p.Controls.Add(new WinForms.Label { Text = "Style", ForeColor = Sub, AutoSize = true, Location = new Point(2, 304), BackColor = Bg });
+        var vis = new WinForms.ComboBox
+        {
+            DropDownStyle = WinForms.ComboBoxStyle.DropDownList, Location = new Point(56, 300), Size = new Size(248, 24),
+            BackColor = Face, ForeColor = Fg, FlatStyle = WinForms.FlatStyle.Flat,
+        };
+        vis.Items.AddRange(new object[] { "Bars (from center)", "Bars (classic)", "Dots (9x9)" });
+        vis.SelectedIndex = _overlay.Settings.Visual switch { VisualStyle.Centered => 0, VisualStyle.Bars => 1, VisualStyle.Dots => 2, _ => 0 };
+        vis.SelectedIndexChanged += (s, e) => _overlay.SetVisual(vis.SelectedIndex switch { 0 => VisualStyle.Centered, 1 => VisualStyle.Bars, 2 => VisualStyle.Dots, _ => VisualStyle.Centered });
+        p.Controls.Add(vis);
 
-        Section(p, "Effects", 240);
-        Check(p, "Weather on the notch (rain / snow)", 264, _overlay.Settings.WeatherFx, v => _overlay.SetWeatherFx(v));
-        Check(p, "Confetti on big moments", 290, _overlay.Settings.Confetti, v => _overlay.SetConfetti(v));
+        Section(p, "Effects", 338);
+        Check(p, "Weather on the notch (rain / snow)", 362, _overlay.Settings.WeatherFx, v => _overlay.SetWeatherFx(v));
+        Check(p, "Confetti on big moments", 388, _overlay.Settings.Confetti, v => _overlay.SetConfetti(v));
     }
 
     void BuildAlerts()
@@ -219,8 +230,9 @@ sealed class SettingsForm : WinForms.Form
         p.Controls.Add(combo);
         Row(p, "Speed", 214, () => StepRate(-1), () => StepRate(+1), out _rVal);
 
-        Section(p, "Commands", 266);
-        var see = Btn("See all commands…", 0, 290, 304, 30);
+        Section(p, "Commands", 258);
+        Check(p, "Sharper free-text (Whisper)", 282, _overlay.Settings.UseWhisper, v => _overlay.SetUseWhisper(v));
+        var see = Btn("See all commands…", 0, 312, 304, 30);
         see.Click += (s, e) => ShowCommands();
         p.Controls.Add(see);
     }
@@ -341,6 +353,12 @@ sealed class SettingsForm : WinForms.Form
 
     void StepRate(int delta) { _overlay.SetSiriRate(_overlay.Settings.SiriRate + delta); Sync(); }
 
+    void StepArtSize(double delta) { _overlay.SetArtScale(_overlay.Settings.ArtScale + delta); Sync(); }
+
+    void StepArtNudge(double delta) { _overlay.SetArtNudge(_overlay.Settings.ArtNudge + delta); Sync(); }
+
+    void StepArtNudgeX(double delta) { _overlay.SetArtNudgeX(_overlay.Settings.ArtNudgeX + delta); Sync(); }
+
     void StepDrag(int delta) { _overlay.SetDragStrength(_overlay.Settings.DragStrength + delta); Sync(); }
 
     DevicesForm? _devices;
@@ -385,6 +403,9 @@ sealed class SettingsForm : WinForms.Form
         _bVal.Text = $"{_overlay.Settings.Bars}";
         _gVal.Text = $"{_overlay.Settings.SiriBorderSize * 100:0}%";
         _rVal.Text = $"{_overlay.Settings.SiriRate:+0;-0;0}";
+        _aVal.Text = $"{_overlay.Settings.ArtScale * 100:0}%";
+        _tVal.Text = $"{_overlay.Settings.ArtNudge:+0;-0;0}px";
+        _txVal.Text = $"{_overlay.Settings.ArtNudgeX:+0;-0;0}px";
         _dVal.Text = $"{_overlay.Settings.DragStrength}x";
     }
 

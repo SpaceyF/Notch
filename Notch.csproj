@@ -8,10 +8,14 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>Notch</AssemblyName>
+    <!-- so the whisper native libs get bundled into the single-file publish -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="9.0.0" />
     <PackageReference Include="System.Speech" Version="9.0.0" />
+    <PackageReference Include="Whisper.net" Version="1.5.0" />
+    <PackageReference Include="Whisper.net.Runtime" Version="1.5.0" />
   </ItemGroup>
 </Project>
